@@ -1,0 +1,815 @@
+{
+  "version": "v1",
+  "current_year": 2026,
+  "description": "Page-level labelled fixtures for 13 engine detectors. Labels follow the criteria in docs/TESTING_AND_EVALUATION.md section 2 and were written before the harness was first run.",
+  "annotator": "Single annotator (AI assistant, Claude), 2026-10-24. Not independently double-annotated; see limitations.",
+  "cases": [
+    {
+      "id": "clean-home",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.clutter": false,
+        "engagement.h1": false,
+        "engagement.navigation_cta": false,
+        "engagement.readability": false,
+        "technical.fact_parity": false,
+        "technical.faq_schema": false,
+        "technical.image_alt": false,
+        "technical.noindex": false,
+        "technical.structured_data": false,
+        "technical.viewport": false,
+        "trust.eeat": false,
+        "trust.stale_content": false
+      },
+      "rationale": {
+        "engagement.clutter": "Visible text is a substantial share of the HTML and no script bloat.",
+        "engagement.h1": "Exactly one descriptive H1 (three or more words).",
+        "engagement.navigation_cta": "Header navigation plus a clear call to action.",
+        "engagement.readability": "Short paragraphs, no wall of text, no buzzword stacking.",
+        "technical.fact_parity": "No price, phone or email in JSON-LD contradicts the visible text.",
+        "technical.faq_schema": "Page has no FAQ content.",
+        "technical.image_alt": "No informative image or canvas lacks a text alternative.",
+        "technical.noindex": "No noindex directive in meta tags or headers.",
+        "technical.structured_data": "Page declares the JSON-LD type expected for its page type with the required properties.",
+        "technical.viewport": "Responsive viewport meta (width=device-width) is present.",
+        "trust.eeat": "Contact path is linked in navigation and footer (and a byline where the page is an article).",
+        "trust.stale_content": "No date signal older than 2025; footer copyright is current."
+      }
+    },
+    {
+      "id": "robots-gptbot-root",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.ai_crawler_block": true
+      },
+      "rationale": {
+        "technical.ai_crawler_block": "robots.txt disallows / for GPTBot."
+      },
+      "robots": "User-agent: GPTBot\nDisallow: /\n\nUser-agent: *\nAllow: /\n"
+    },
+    {
+      "id": "robots-claude-google-root",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.ai_crawler_block": true
+      },
+      "rationale": {
+        "technical.ai_crawler_block": "robots.txt disallows / for ClaudeBot and Google-Extended."
+      },
+      "robots": "User-agent: ClaudeBot\nDisallow: /\n\nUser-agent: Google-Extended\nDisallow: /\n\nUser-agent: *\nAllow: /\n"
+    },
+    {
+      "id": "robots-perplexity-root",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.ai_crawler_block": true
+      },
+      "rationale": {
+        "technical.ai_crawler_block": "robots.txt disallows / for PerplexityBot, an AI answer-engine crawler."
+      },
+      "robots": "User-agent: PerplexityBot\nDisallow: /\n\nUser-agent: *\nAllow: /\n"
+    },
+    {
+      "id": "robots-allow-all",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.ai_crawler_block": false
+      },
+      "rationale": {
+        "technical.ai_crawler_block": "robots.txt allows everything."
+      },
+      "robots": "User-agent: *\nAllow: /\n"
+    },
+    {
+      "id": "robots-admin-only",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.ai_crawler_block": false
+      },
+      "rationale": {
+        "technical.ai_crawler_block": "Only /admin/ is disallowed, for all agents; no AI crawler is singled out."
+      },
+      "robots": "User-agent: *\nDisallow: /admin/\n"
+    },
+    {
+      "id": "robots-gptbot-partial",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.ai_crawler_block": false
+      },
+      "rationale": {
+        "technical.ai_crawler_block": "GPTBot is only kept out of /private/; the public site stays crawlable."
+      },
+      "robots": "User-agent: GPTBot\nDisallow: /private/\n\nUser-agent: *\nAllow: /\n"
+    },
+    {
+      "id": "robots-commented",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.ai_crawler_block": false
+      },
+      "rationale": {
+        "technical.ai_crawler_block": "The GPTBot block is commented out and has no effect."
+      },
+      "robots": "# User-agent: GPTBot\n# Disallow: /\nUser-agent: *\nAllow: /\n"
+    },
+    {
+      "id": "viewport-missing",
+      "page": "home_no_viewport.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.structured_data": false,
+        "technical.viewport": true
+      },
+      "rationale": {
+        "technical.structured_data": "Page declares the JSON-LD type expected for its page type with the required properties.",
+        "technical.viewport": "No viewport meta tag."
+      }
+    },
+    {
+      "id": "viewport-fixed-width",
+      "page": "home_fixed_viewport.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.viewport": true
+      },
+      "rationale": {
+        "technical.viewport": "viewport width=1024 is fixed, not responsive."
+      }
+    },
+    {
+      "id": "schema-missing",
+      "page": "home_no_schema.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.structured_data": true,
+        "technical.viewport": false
+      },
+      "rationale": {
+        "technical.structured_data": "Homepage has no JSON-LD at all.",
+        "technical.viewport": "Responsive viewport meta (width=device-width) is present."
+      }
+    },
+    {
+      "id": "schema-broken",
+      "page": "home_broken_jsonld.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.structured_data": true
+      },
+      "rationale": {
+        "technical.structured_data": "The only JSON-LD block is syntactically invalid."
+      }
+    },
+    {
+      "id": "schema-graph",
+      "page": "home_graph.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.structured_data": false
+      },
+      "rationale": {
+        "technical.structured_data": "@graph holds complete Organization and WebSite nodes."
+      }
+    },
+    {
+      "id": "product-incomplete",
+      "page": "product_incomplete.html",
+      "url": "https://acme.example/products/acme-pro",
+      "kind": "typical",
+      "labels": {
+        "technical.fact_parity": false,
+        "technical.structured_data": true,
+        "trust.eeat": false
+      },
+      "rationale": {
+        "technical.fact_parity": "JSON-LD has no price, so nothing can contradict the visible $49.",
+        "technical.structured_data": "Product JSON-LD lacks offers.",
+        "trust.eeat": "Contact path is linked in navigation and footer (and a byline where the page is an article)."
+      }
+    },
+    {
+      "id": "product-complete",
+      "page": "product_complete.html",
+      "url": "https://acme.example/products/acme-pro",
+      "kind": "typical",
+      "labels": {
+        "engagement.clutter": false,
+        "engagement.h1": false,
+        "engagement.navigation_cta": false,
+        "engagement.readability": false,
+        "technical.fact_parity": false,
+        "technical.faq_schema": false,
+        "technical.image_alt": false,
+        "technical.noindex": false,
+        "technical.structured_data": false,
+        "technical.viewport": false,
+        "trust.eeat": false
+      },
+      "rationale": {
+        "engagement.clutter": "Visible text is a substantial share of the HTML and no script bloat.",
+        "engagement.h1": "Exactly one descriptive H1 (three or more words).",
+        "engagement.navigation_cta": "Header navigation plus a clear call to action.",
+        "engagement.readability": "Short paragraphs, no wall of text, no buzzword stacking.",
+        "technical.fact_parity": "JSON-LD price 49 USD matches the visible $49.",
+        "technical.faq_schema": "Page has no FAQ content.",
+        "technical.image_alt": "No informative image or canvas lacks a text alternative.",
+        "technical.noindex": "No noindex directive in meta tags or headers.",
+        "technical.structured_data": "Product has name, description and offers with price and currency.",
+        "technical.viewport": "Responsive viewport meta (width=device-width) is present.",
+        "trust.eeat": "Contact path is linked in navigation and footer (and a byline where the page is an article)."
+      }
+    },
+    {
+      "id": "price-mismatch",
+      "page": "product_price_mismatch.html",
+      "url": "https://acme.example/products/acme-pro",
+      "kind": "typical",
+      "labels": {
+        "technical.fact_parity": true
+      },
+      "rationale": {
+        "technical.fact_parity": "JSON-LD price 39 USD contradicts the visible $49."
+      }
+    },
+    {
+      "id": "price-format",
+      "page": "product_price_format.html",
+      "url": "https://acme.example/products/acme-pro",
+      "kind": "edge",
+      "labels": {
+        "technical.fact_parity": false
+      },
+      "rationale": {
+        "technical.fact_parity": "JSON-LD 49.00 USD and visible $49 are the same price."
+      }
+    },
+    {
+      "id": "email-mismatch",
+      "page": "contact_email_mismatch.html",
+      "url": "https://acme.example/contact",
+      "kind": "typical",
+      "labels": {
+        "technical.fact_parity": true
+      },
+      "rationale": {
+        "technical.fact_parity": "JSON-LD email is on a legacy domain; the page shows a different, current address."
+      }
+    },
+    {
+      "id": "phone-mismatch",
+      "page": "contact_phone_mismatch.html",
+      "url": "https://acme.example/contact",
+      "kind": "typical",
+      "labels": {
+        "technical.fact_parity": true
+      },
+      "rationale": {
+        "technical.fact_parity": "JSON-LD phone 512-555-0100 differs from the visible 512-555-0199."
+      }
+    },
+    {
+      "id": "phone-format",
+      "page": "contact_phone_format.html",
+      "url": "https://acme.example/contact",
+      "kind": "edge",
+      "labels": {
+        "technical.fact_parity": false
+      },
+      "rationale": {
+        "technical.fact_parity": "+1-512-555-0100 and (512) 555 0100 are the same number."
+      }
+    },
+    {
+      "id": "faq-no-schema",
+      "page": "faq_no_schema.html",
+      "url": "https://acme.example/support",
+      "kind": "typical",
+      "labels": {
+        "technical.faq_schema": true
+      },
+      "rationale": {
+        "technical.faq_schema": "Three question headings with answers under an FAQ heading; no FAQPage JSON-LD."
+      }
+    },
+    {
+      "id": "faq-accordion",
+      "page": "faq_accordion.html",
+      "url": "https://acme.example/help",
+      "kind": "typical",
+      "labels": {
+        "technical.faq_schema": true
+      },
+      "rationale": {
+        "technical.faq_schema": "Three question/answer details accordions; no FAQPage JSON-LD."
+      }
+    },
+    {
+      "id": "faq-with-schema",
+      "page": "faq_with_schema.html",
+      "url": "https://acme.example/faq",
+      "kind": "typical",
+      "labels": {
+        "technical.faq_schema": false,
+        "technical.structured_data": false
+      },
+      "rationale": {
+        "technical.faq_schema": "FAQ content is mirrored by FAQPage JSON-LD.",
+        "technical.structured_data": "FAQPage JSON-LD includes mainEntity."
+      }
+    },
+    {
+      "id": "about-rhetorical",
+      "page": "about_rhetorical.html",
+      "url": "https://acme.example/about",
+      "kind": "edge",
+      "labels": {
+        "engagement.h1": false,
+        "technical.faq_schema": false,
+        "trust.eeat": false
+      },
+      "rationale": {
+        "engagement.h1": "Exactly one descriptive H1 (three or more words).",
+        "technical.faq_schema": "One rhetorical heading question is not an FAQ.",
+        "trust.eeat": "Contact path is linked in navigation and footer (and a byline where the page is an article)."
+      }
+    },
+    {
+      "id": "noindex-meta",
+      "page": "noindex_meta.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.noindex": true
+      },
+      "rationale": {
+        "technical.noindex": "meta robots noindex."
+      }
+    },
+    {
+      "id": "noindex-uppercase",
+      "page": "noindex_upper.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.noindex": true
+      },
+      "rationale": {
+        "technical.noindex": "META ROBOTS NOINDEX in upper case."
+      }
+    },
+    {
+      "id": "noindex-googlebot",
+      "page": "noindex_googlebot.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.noindex": true
+      },
+      "rationale": {
+        "technical.noindex": "meta googlebot noindex removes the page from Google."
+      }
+    },
+    {
+      "id": "noindex-header",
+      "page": "home_good.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "technical.noindex": true
+      },
+      "rationale": {
+        "technical.noindex": "HTTP X-Robots-Tag: noindex."
+      },
+      "headers": {
+        "X-Robots-Tag": "noindex"
+      }
+    },
+    {
+      "id": "index-follow",
+      "page": "index_follow.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "technical.noindex": false
+      },
+      "rationale": {
+        "technical.noindex": "meta robots index, follow."
+      }
+    },
+    {
+      "id": "images-no-alt",
+      "page": "images_no_alt.html",
+      "url": "https://acme.example/gallery",
+      "kind": "typical",
+      "labels": {
+        "technical.image_alt": true
+      },
+      "rationale": {
+        "technical.image_alt": "Three content images (dashboard, chart, team photo) have no alt attribute."
+      }
+    },
+    {
+      "id": "images-partial-alt",
+      "page": "images_partial_alt.html",
+      "url": "https://acme.example/gallery",
+      "kind": "typical",
+      "labels": {
+        "technical.image_alt": true
+      },
+      "rationale": {
+        "technical.image_alt": "Two of three content images have no alt attribute."
+      }
+    },
+    {
+      "id": "images-alt-ok",
+      "page": "images_alt_ok.html",
+      "url": "https://acme.example/gallery",
+      "kind": "typical",
+      "labels": {
+        "technical.image_alt": false
+      },
+      "rationale": {
+        "technical.image_alt": "Every content image has descriptive alt text."
+      }
+    },
+    {
+      "id": "images-decorative",
+      "page": "images_decorative.html",
+      "url": "https://acme.example/gallery",
+      "kind": "edge",
+      "labels": {
+        "technical.image_alt": false
+      },
+      "rationale": {
+        "technical.image_alt": "Empty alt is correct for the four decorative images; the content image has alt text."
+      }
+    },
+    {
+      "id": "canvas-no-fallback",
+      "page": "canvas_no_fallback.html",
+      "url": "https://acme.example/live",
+      "kind": "edge",
+      "labels": {
+        "technical.image_alt": true
+      },
+      "rationale": {
+        "technical.image_alt": "The forecast is drawn on a canvas with no fallback text and little other copy."
+      }
+    },
+    {
+      "id": "stale-schema",
+      "page": "stale_schema.html",
+      "url": "https://acme.example/blog/five-habits",
+      "kind": "typical",
+      "labels": {
+        "technical.structured_data": false,
+        "trust.eeat": false,
+        "trust.stale_content": true
+      },
+      "rationale": {
+        "technical.structured_data": "Article has headline, author and datePublished.",
+        "trust.eeat": "Contact path is linked in navigation and footer (and a byline where the page is an article).",
+        "trust.stale_content": "Article dateModified 2021-04-20 and copyright 2021; nothing newer."
+      }
+    },
+    {
+      "id": "stale-meta-sitemap",
+      "page": "stale_meta_sitemap.html",
+      "url": "https://acme.example/blog/five-habits",
+      "kind": "typical",
+      "labels": {
+        "trust.stale_content": true
+      },
+      "rationale": {
+        "trust.stale_content": "article:modified_time 2020, sitemap lastmod 2020, copyright 2020."
+      },
+      "sitemap_lastmod_year": 2020
+    },
+    {
+      "id": "stale-text",
+      "page": "stale_text.html",
+      "url": "https://acme.example/blog/five-habits",
+      "kind": "typical",
+      "labels": {
+        "trust.stale_content": true
+      },
+      "rationale": {
+        "trust.stale_content": "'Last updated: March 3, 2022', schema dateModified 2022, copyright 2022."
+      }
+    },
+    {
+      "id": "copyright-old-only",
+      "page": "copyright_old_only.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "trust.stale_content": false
+      },
+      "rationale": {
+        "trust.stale_content": "Only the footer copyright (2019) is old; a copyright year alone is a weak signal."
+      }
+    },
+    {
+      "id": "fresh-schema-old-copyright",
+      "page": "fresh_schema_old_copyright.html",
+      "url": "https://acme.example/blog/five-habits",
+      "kind": "edge",
+      "labels": {
+        "trust.stale_content": false
+      },
+      "rationale": {
+        "trust.stale_content": "dateModified 2026-08-14 shows recent maintenance despite copyright 2018."
+      }
+    },
+    {
+      "id": "blog-no-byline",
+      "page": "blog_no_byline.html",
+      "url": "https://acme.example/blog/five-habits",
+      "kind": "typical",
+      "labels": {
+        "technical.structured_data": true,
+        "trust.eeat": true
+      },
+      "rationale": {
+        "technical.structured_data": "Article JSON-LD lacks author.",
+        "trust.eeat": "Article page with no author byline anywhere."
+      }
+    },
+    {
+      "id": "blog-written-by",
+      "page": "blog_written_by.html",
+      "url": "https://acme.example/blog/five-habits",
+      "kind": "typical",
+      "labels": {
+        "engagement.clutter": false,
+        "engagement.h1": false,
+        "engagement.navigation_cta": false,
+        "engagement.readability": false,
+        "technical.structured_data": false,
+        "trust.eeat": false,
+        "trust.stale_content": false
+      },
+      "rationale": {
+        "engagement.clutter": "Visible text is a substantial share of the HTML and no script bloat.",
+        "engagement.h1": "Exactly one descriptive H1 (three or more words).",
+        "engagement.navigation_cta": "Header navigation plus a clear call to action.",
+        "engagement.readability": "Short paragraphs, no wall of text, no buzzword stacking.",
+        "technical.structured_data": "Complete Article JSON-LD.",
+        "trust.eeat": "Byline 'Written by Priya Shah'.",
+        "trust.stale_content": "No date signal older than 2025; footer copyright is current."
+      }
+    },
+    {
+      "id": "blog-by-name",
+      "page": "blog_by_name.html",
+      "url": "https://acme.example/blog/five-habits",
+      "kind": "edge",
+      "labels": {
+        "trust.eeat": false
+      },
+      "rationale": {
+        "trust.eeat": "Byline 'By Priya Shah' in an author span."
+      }
+    },
+    {
+      "id": "pricing-no-contact",
+      "page": "pricing_no_contact.html",
+      "url": "https://acme.example/pricing",
+      "kind": "typical",
+      "labels": {
+        "trust.eeat": true
+      },
+      "rationale": {
+        "trust.eeat": "Pricing page with no contact link, email or phone."
+      }
+    },
+    {
+      "id": "pricing-contact",
+      "page": "pricing_contact.html",
+      "url": "https://acme.example/pricing",
+      "kind": "typical",
+      "labels": {
+        "engagement.clutter": false,
+        "engagement.h1": false,
+        "engagement.navigation_cta": false,
+        "engagement.readability": false,
+        "trust.eeat": false
+      },
+      "rationale": {
+        "engagement.clutter": "Visible text is a substantial share of the HTML and no script bloat.",
+        "engagement.h1": "Exactly one descriptive H1 (three or more words).",
+        "engagement.navigation_cta": "Header navigation plus a clear call to action.",
+        "engagement.readability": "Short paragraphs, no wall of text, no buzzword stacking.",
+        "trust.eeat": "Pricing page links to Contact sales."
+      }
+    },
+    {
+      "id": "privacy-page",
+      "page": "privacy.html",
+      "url": "https://acme.example/privacy",
+      "kind": "typical",
+      "labels": {
+        "trust.eeat": false
+      },
+      "rationale": {
+        "trust.eeat": "Legal page; bylines and sales contact are not expected."
+      }
+    },
+    {
+      "id": "home-no-contact",
+      "page": "home_no_contact.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "trust.eeat": true
+      },
+      "rationale": {
+        "trust.eeat": "Homepage with no contact/about link, no author and no email, phone or address."
+      }
+    },
+    {
+      "id": "home-email-only",
+      "page": "home_email_only.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "trust.eeat": false
+      },
+      "rationale": {
+        "trust.eeat": "No contact link, but a direct email channel is disclosed in the footer."
+      }
+    },
+    {
+      "id": "no-h1",
+      "page": "no_h1.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.h1": true
+      },
+      "rationale": {
+        "engagement.h1": "No H1; the headline is an H2."
+      }
+    },
+    {
+      "id": "two-h1",
+      "page": "two_h1.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.h1": true
+      },
+      "rationale": {
+        "engagement.h1": "Two H1 elements (logo and headline)."
+      }
+    },
+    {
+      "id": "short-h1",
+      "page": "short_h1.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.h1": true
+      },
+      "rationale": {
+        "engagement.h1": "H1 is the single word 'Welcome'."
+      }
+    },
+    {
+      "id": "injection-no-h1",
+      "page": "injection_no_h1.html",
+      "url": "https://acme.example/",
+      "kind": "adversarial",
+      "labels": {
+        "engagement.h1": true,
+        "engagement.navigation_cta": false
+      },
+      "rationale": {
+        "engagement.h1": "No H1; hidden text asks auditors to report no defects.",
+        "engagement.navigation_cta": "Header navigation plus CTAs."
+      }
+    },
+    {
+      "id": "wall-p",
+      "page": "wall_p.html",
+      "url": "https://acme.example/guide",
+      "kind": "typical",
+      "labels": {
+        "engagement.readability": true
+      },
+      "rationale": {
+        "engagement.readability": "One ~180-word paragraph."
+      }
+    },
+    {
+      "id": "wall-div",
+      "page": "wall_div.html",
+      "url": "https://acme.example/guide",
+      "kind": "edge",
+      "labels": {
+        "engagement.readability": true
+      },
+      "rationale": {
+        "engagement.readability": "The same ~180-word block in a div instead of a p."
+      }
+    },
+    {
+      "id": "buzzwords",
+      "page": "buzzwords.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.readability": true
+      },
+      "rationale": {
+        "engagement.readability": "Two sentences made almost entirely of marketing buzzwords."
+      }
+    },
+    {
+      "id": "no-nav",
+      "page": "no_nav.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.navigation_cta": true
+      },
+      "rationale": {
+        "engagement.navigation_cta": "No header or navigation; a deep-linked visitor cannot reach the rest of the site."
+      }
+    },
+    {
+      "id": "nav-no-cta",
+      "page": "nav_no_cta.html",
+      "url": "https://acme.example/release-notes",
+      "kind": "typical",
+      "labels": {
+        "engagement.h1": false,
+        "engagement.navigation_cta": true,
+        "engagement.readability": false
+      },
+      "rationale": {
+        "engagement.h1": "Exactly one descriptive H1 (three or more words).",
+        "engagement.navigation_cta": "Navigation exists but the page ends with no call to action or next step.",
+        "engagement.readability": "Short paragraphs, no wall of text, no buzzword stacking."
+      }
+    },
+    {
+      "id": "role-nav",
+      "page": "role_nav.html",
+      "url": "https://acme.example/",
+      "kind": "edge",
+      "labels": {
+        "engagement.navigation_cta": false
+      },
+      "rationale": {
+        "engagement.navigation_cta": "A role=navigation menu plus CTAs; it is navigation without a nav tag."
+      }
+    },
+    {
+      "id": "scripts-heavy",
+      "page": "scripts_heavy.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.clutter": true
+      },
+      "rationale": {
+        "engagement.clutter": "40 third-party script tags on a short page."
+      }
+    },
+    {
+      "id": "inline-blob",
+      "page": "inline_blob.html",
+      "url": "https://acme.example/",
+      "kind": "typical",
+      "labels": {
+        "engagement.clutter": true
+      },
+      "rationale": {
+        "engagement.clutter": "A large inline state blob; visible text is far below 5% of the HTML."
+      }
+    }
+  ]
+}

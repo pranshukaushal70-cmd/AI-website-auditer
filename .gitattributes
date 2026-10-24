@@ -1,0 +1,13 @@
+# Keep LF line endings in the repository and in every checkout (the Python sources are LF-normalised),
+# independent of a machine-wide core.autocrlf setting.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+
+# Evaluation results are recorded artifacts whose SHA-256 checksums are tracked in docs/CHANGE_LOG.md. Store them
+# byte-for-byte as written (run_evaluation.py writes platform newlines), so a checkout reproduces the recorded hashes.
+evaluation/results/** -text

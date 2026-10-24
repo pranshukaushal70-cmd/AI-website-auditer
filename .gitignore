@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+backend/var/
+frontend/node_modules/
+frontend/dist/
+examples/reports/*.json
+# Editor-local settings (e.g. a Live Server port); not needed by the project.
+.vscode/
