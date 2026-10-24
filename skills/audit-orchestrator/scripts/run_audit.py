@@ -41,25 +41,44 @@ class Progress:
 
     Written atomically (temp file + replace) so a reader never sees a half-written file.
     Disabled when no path is given, which keeps the CLI behaviour unchanged.
+
+    On Windows the replace fails with PermissionError while a reader (the web API polls this file) has it
+    open, so each write is retried with a short bounded backoff (RETRY_DELAYS, about 0.6 s in total). An
+    exhausted retry is reported on stderr and update() returns False; it was silently ignored, which could
+    leave a stale stage table. Every write carries the full stage table, so a later successful write
+    repairs an earlier lost one; main() treats a failed final write as an error (non-zero exit).
     """
 
     STAGES = ("technical", "trust", "engagement", "compose")
+    RETRY_DELAYS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.25)  # sleeps between the 7 attempts
 
-    def __init__(self, path):
+    def __init__(self, path, sleep=time.sleep):
         self.path = Path(path) if path else None
         self.stages = {name: "pending" for name in self.STAGES}
+        self.failures = []
+        self._sleep = sleep
 
     def update(self, stage_name, state):
+        """Record and persist a stage state. Returns True when persisted (or progress is disabled)."""
         if not self.path:
-            return
+            return True
         self.stages[stage_name] = state
         payload = {"stages": self.stages, "current": stage_name, "updated_at": time.time()}
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        try:
-            tmp.write_text(json.dumps(payload), encoding="utf-8")
-            tmp.replace(self.path)
-        except OSError:
-            pass
+        for attempt in range(len(self.RETRY_DELAYS) + 1):
+            try:
+                tmp.write_text(json.dumps(payload), encoding="utf-8")
+                tmp.replace(self.path)
+                return True
+            except OSError as exc:
+                last_error = exc
+                if attempt < len(self.RETRY_DELAYS):
+                    self._sleep(self.RETRY_DELAYS[attempt])
+        message = (f"could not persist progress {stage_name}={state} after {len(self.RETRY_DELAYS) + 1} attempts: "
+                   f"{type(last_error).__name__}: {last_error}")
+        self.failures.append(message)
+        print(f"ERROR: {message}", file=sys.stderr)
+        return False
 
 
 def stage(stage_name, cmd, output_path, stage_timeout, deadline, errors, timed_out, progress=None):
@@ -199,7 +218,12 @@ def main():
             print(f"ERROR: could not annotate runtime metadata: {exc}", file=sys.stderr)
             return 2
 
-        progress.update("compose", "completed")
+        # The final write must succeed: otherwise a caller polling the progress file would see a stale stage
+        # table (compose "running") for an audit reported as successful. Exit non-zero instead.
+        if not progress.update("compose", "completed"):
+            print("ERROR: the final progress update could not be persisted; the audit is not reported as successful.",
+                  file=sys.stderr)
+            return 3
         print(out)
         if errors:
             print("WARNING: " + " | ".join(errors), file=sys.stderr)

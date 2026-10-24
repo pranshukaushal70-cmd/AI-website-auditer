@@ -30,6 +30,7 @@ import check_engagement
 import check_technical
 import check_trust
 import compose_report
+import run_audit
 
 COMPOSER = ROOT / "skills" / "audit-orchestrator" / "scripts" / "compose_report.py"
 
@@ -1105,6 +1106,84 @@ class TestOffsiteSitemaps(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 5.0)
         self.assertLess(sum(len(u) for u in res["urls"]), 10_000)  # nothing like the 10^9-character expansion
         self.assertGreaterEqual(tuple(int(x) for x in pyexpat.EXPAT_VERSION.split("_")[1].split(".")), (2, 4, 1))
+
+
+class TestProgressWriteReliability(unittest.TestCase):
+    """Phase 6 reliability fix: on Windows, replacing the progress file fails with PermissionError while the web
+    API has it open. Writes are retried with a bounded backoff; an exhausted retry is surfaced, never ignored."""
+
+    def setUp(self):
+        import contextlib
+        import io
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.dir.name) / "progress.json"
+        self.sleeps = []
+        self.progress = run_audit.Progress(str(self.path), sleep=self.sleeps.append)  # no real sleeping
+        self.stderr = io.StringIO()
+        self._quiet = contextlib.redirect_stderr(self.stderr)
+        self._quiet.__enter__()
+
+    def tearDown(self):
+        self._quiet.__exit__(None, None, None)
+        self.dir.cleanup()
+
+    def stored(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))["stages"]
+
+    def test_transient_replace_failures_are_retried_until_the_write_succeeds(self):
+        real_replace = Path.replace
+        outcomes = [PermissionError(13, "Access is denied")] * 3
+
+        def flaky(self_path, target):
+            if outcomes:
+                raise outcomes.pop(0)
+            return real_replace(self_path, target)
+        with patch.object(Path, "replace", flaky):
+            self.assertTrue(self.progress.update("compose", "completed"))
+        self.assertEqual(self.stored()["compose"], "completed")
+        self.assertEqual(self.sleeps, list(run_audit.Progress.RETRY_DELAYS[:3]))
+        self.assertEqual(self.progress.failures, [])
+        self.assertNotIn("ERROR", self.stderr.getvalue())
+
+    def test_exhausted_retries_are_reported_not_swallowed(self):
+        self.assertTrue(self.progress.update("compose", "running"))
+        with patch.object(Path, "replace", side_effect=PermissionError(13, "Access is denied")) as replace:
+            self.assertFalse(self.progress.update("compose", "completed"))
+        self.assertEqual(replace.call_count, len(run_audit.Progress.RETRY_DELAYS) + 1)  # bounded
+        self.assertEqual(self.sleeps, list(run_audit.Progress.RETRY_DELAYS))
+        self.assertLess(sum(run_audit.Progress.RETRY_DELAYS), 1.0)
+        self.assertEqual(len(self.progress.failures), 1)
+        self.assertIn("could not persist progress compose=completed after 7 attempts", self.stderr.getvalue())
+        self.assertIn("PermissionError", self.progress.failures[0])
+        self.assertEqual(self.stored()["compose"], "running")  # the stale file is left as it was, not corrupted
+
+    def test_a_later_write_repairs_an_earlier_lost_one(self):
+        with patch.object(Path, "replace", side_effect=PermissionError(13, "Access is denied")):
+            self.assertFalse(self.progress.update("technical", "completed"))
+        self.assertTrue(self.progress.update("trust", "completed"))
+        self.assertEqual(self.stored()["technical"], "completed")  # every write carries the full stage table
+
+    def test_disabled_progress_never_fails(self):
+        self.assertTrue(run_audit.Progress(None).update("compose", "completed"))
+
+    def test_audit_is_not_reported_successful_when_the_final_progress_write_fails(self):
+        """main() with stubbed stages: every stage succeeds, but the final progress write cannot be persisted."""
+        out = Path(self.dir.name) / "report.json"
+
+        def fake_run(cmd, timeout):
+            target = Path(cmd[cmd.index("--output") + 1])
+            target.write_text(json.dumps({"execution": {"partial": False, "errors": [], "missing_categories": []}}), encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, "", ""), None
+
+        def update(self_progress, stage_name, state):
+            return not (stage_name == "compose" and state == "completed")
+        argv = ["run_audit.py", "https://example.com", "--output", str(out), "--progress-file", str(self.path)]
+        with patch.object(run_audit, "run", fake_run), patch.object(run_audit.Progress, "update", update),                 patch.object(sys, "argv", argv):
+            self.assertEqual(run_audit.main(), 3)
+        self.assertIn("final progress update could not be persisted", self.stderr.getvalue())
+        with patch.object(run_audit, "run", fake_run), patch.object(sys, "argv", argv):
+            self.assertEqual(run_audit.main(), 0)  # control: the same run succeeds when the write succeeds
+        self.assertEqual(self.stored()["compose"], "completed")
 
 
 class TestVerifierLoopbackBinding(unittest.TestCase):

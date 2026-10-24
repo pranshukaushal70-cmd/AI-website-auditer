@@ -76,6 +76,29 @@ def test_active_jobs_are_marked_interrupted_on_startup(tmp_path):
         manager.shutdown()
 
 
+def test_engine_failure_exit_is_never_stored_as_completed(tmp_path):
+    """Phase 6: the engine exits 3 when its final progress update cannot be persisted, even though a valid report
+    exists. The runner must record a failed audit, not a completed one."""
+    import json
+    settings = make_settings(tmp_path)
+    db = Database(settings.db_path)
+    audit_id = "4" * 32
+    db.create_audit(audit_id, "https://e.example/", "e.example", 2, "v")
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(sample_report()), encoding="utf-8")
+    manager = JobManager(settings, db)
+    try:
+        manager._finish(audit_id, "exited", 3, report_path,
+                        "ERROR: the final progress update could not be persisted; the audit is not reported as successful.")
+        audit = db.get_audit(audit_id)
+        assert audit["status"] == "failed" and audit["readiness_score"] is None
+        assert "engine exited with code 3" in audit["error"] and "final progress update" in audit["error"]
+        manager._finish(audit_id, "exited", 0, report_path, "")  # control: exit 0 with the same report is stored
+        assert db.get_audit(audit_id)["status"] == "partial"
+    finally:
+        manager.shutdown()
+
+
 def test_child_environment_does_not_inherit_secrets(tmp_path):
     os.environ["ANTHROPIC_API_KEY"] = "sk-test-secret"
     os.environ["DATABASE_PASSWORD"] = "hunter2"
