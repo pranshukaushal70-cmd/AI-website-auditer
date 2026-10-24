@@ -676,6 +676,13 @@ def parse_xml_sitemap(sitemap_url, base_url, max_depth=2, max_sitemaps=5, max_ur
         "sitemaps_parsed": []
     }
     
+    # The starting sitemap must be on the audited site too (security phase 6), not only queued child
+    # sitemaps: a robots.txt "Sitemap:" line must not direct the crawler to another host, CDN subdomains included.
+    if not is_same_domain(sitemap_url, base_url):
+        result["skipped_offsite"] = True
+        result["evidence"] = f"Skipped a sitemap hosted on another host (not fetched): {sitemap_url}"
+        return result
+
     visited_sitemaps = set()
     sitemap_queue = [sitemap_url]
     
@@ -1234,7 +1241,12 @@ def analyze_technical(url, max_crawl_pages=6, fetch_fn=None):
         return findings
 
     # 2. XML Sitemap Discovery
-    sitemap_candidates = discover_sitemap_candidates(base_url, robots_info["sitemaps"])
+    # Only sitemaps on the audited site are fetched (security phase 6). robots.txt may declare sitemaps on other
+    # hosts, including CDN subdomains; those are skipped and reported, never requested. www.<site> counts as the
+    # same site, as for every other crawl request (is_same_domain).
+    all_sitemap_candidates = discover_sitemap_candidates(base_url, robots_info["sitemaps"])
+    sitemap_candidates = [u for u in all_sitemap_candidates if is_same_domain(u, base_url)]
+    skipped_offsite_sitemaps = [u for u in all_sitemap_candidates if u not in sitemap_candidates]
     
     sitemap_data = None
     for sm_url in sitemap_candidates:
@@ -1255,6 +1267,11 @@ def analyze_technical(url, max_crawl_pages=6, fetch_fn=None):
         findings["sitemap"]["recoverable"] = sitemap_data.get("recoverable", False)
     else:
         findings["sitemap"]["evidence"] = "No valid XML sitemap discovered via robots.txt or /sitemap.xml."
+    findings["sitemap"]["skipped_offsite"] = skipped_offsite_sitemaps[:10]
+    if skipped_offsite_sitemaps:
+        findings["sitemap"]["evidence"] = (findings["sitemap"].get("evidence", "") + f" Skipped {len(skipped_offsite_sitemaps)} "
+            "sitemap(s) declared in robots.txt on another host (not fetched; only the audited site is crawled): "
+            + ", ".join(skipped_offsite_sitemaps[:5]) + ".").strip()
 
     # 3. Fetch Target URL HTML
     status_code, page_html, response_headers = fetch(url)

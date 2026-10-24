@@ -777,6 +777,8 @@ def main():
         "robots_checked": bool(tech_data and isinstance(tech_data, dict) and ("robots" in tech_data or "robots_txt" in tech_data)),
         "sitemap_checked": sitemap_checked,
         "sitemap_found": bool(isinstance(sitemap_info, dict) and sitemap_info.get("found")),
+        # Sitemaps declared in robots.txt on another host; skipped, never fetched (security phase 6).
+        "sitemaps_skipped_offsite": list((sitemap_info or {}).get("skipped_offsite") or []) if isinstance(sitemap_info, dict) else [],
         "audited_urls": list(((tech_data or {}).get("crawl_scope") or {}).get("crawled_urls", []) or []) if isinstance(tech_data, dict) else [],
         "render_check": bool(tech_data and isinstance(tech_data, dict) and "js_render_gap" in tech_data),
         "external_sources_checked": 0 if not trust_data or (isinstance(trust_data, dict) and (trust_data.get("corroboration_check") or {}).get("status") in UNAVAILABLE_STATUSES + SKIPPED_STATUSES) else 2,

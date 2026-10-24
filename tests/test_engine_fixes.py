@@ -1028,6 +1028,85 @@ class TestSitemapFetchSafety(unittest.TestCase):
         self.assertIn("HTTP 503", self.errors())
 
 
+class TestOffsiteSitemaps(unittest.TestCase):
+    """Security phase 6, step 2: sitemaps declared in robots.txt on another host (CDN subdomains included) are
+    skipped and reported, never fetched; www.<site> is the same site, as for every crawl request."""
+
+    SITE = "https://example.com"
+    ROBOTS = ("User-agent: *\nAllow: /\n"
+              "Sitemap: https://cdn.example.com/sitemap.xml\n"
+              "Sitemap: https://other.example/sitemap.xml\n"
+              "Sitemap: http://10.0.0.1/sitemap.xml\n"
+              "Sitemap: https://www.example.com/sitemap-main.xml\n")
+    PAGE = ("<html><head><title>Example Co</title><meta name='viewport' content='width=device-width'></head>"
+            "<body><h1>Example Co builds forecasting tools</h1></body></html>")
+
+    def setUp(self):
+        os.environ["BRAND_AUDIT_DISABLE_RENDER"] = "1"
+        self.fetched = []
+
+    def tearDown(self):
+        os.environ.pop("BRAND_AUDIT_DISABLE_RENDER", None)
+
+    def fake_fetch(self, url, **kwargs):
+        self.fetched.append(url)
+        headers = {"_final_url": url, "_redirect_chain": []}
+        if url == self.SITE + "/robots.txt":
+            return 200, self.ROBOTS, headers
+        if url == "https://www.example.com/sitemap-main.xml":
+            return 200, ('<urlset><url><loc>https://example.com/pricing</loc><lastmod>2026-09-01</lastmod></url></urlset>'), headers
+        if url.rstrip("/") in (self.SITE, self.SITE + "/pricing"):
+            return 200, self.PAGE, headers
+        return 404, "", headers
+
+    def test_offsite_declared_sitemaps_are_never_fetched_and_are_reported(self):
+        tech = check_technical.analyze_technical(self.SITE + "/", max_crawl_pages=2, fetch_fn=self.fake_fetch)
+        for offsite in ("https://cdn.example.com/sitemap.xml", "https://other.example/sitemap.xml", "http://10.0.0.1/sitemap.xml"):
+            self.assertNotIn(offsite, self.fetched)
+            self.assertIn(offsite, tech["sitemap"]["skipped_offsite"])
+        self.assertIn("https://www.example.com/sitemap-main.xml", self.fetched)  # www.<site> is the same site
+        self.assertTrue(tech["sitemap"]["found"])
+        self.assertIn("Skipped 3 sitemap(s) declared in robots.txt on another host", tech["sitemap"]["evidence"])
+        self.assertTrue(all(check_technical.is_same_domain(u, self.SITE) for u in self.fetched))
+        self.assertEqual(len(tech["robots_txt"]["sitemaps"]), 4)  # the declarations themselves are still recorded
+
+    def test_composed_report_lists_skipped_sitemaps_without_a_false_defect(self):
+        tech = check_technical.analyze_technical(self.SITE + "/", max_crawl_pages=2, fetch_fn=self.fake_fetch)
+        report = compose(tech, None, None, site=self.SITE)
+        self.assertEqual(set(report["scope"]["sitemaps_skipped_offsite"]),
+                         {"https://cdn.example.com/sitemap.xml", "https://other.example/sitemap.xml", "http://10.0.0.1/sitemap.xml"})
+        self.assertNotIn("No XML Sitemap declared in robots.txt", {f["title"] for f in report["findings"]})
+
+    def test_parse_xml_sitemap_refuses_an_offsite_starting_sitemap(self):
+        res = check_technical.parse_xml_sitemap("https://cdn.example.com/sitemap.xml", self.SITE, fetch_fn=self.fake_fetch)
+        self.assertEqual(self.fetched, [])
+        self.assertTrue(res["skipped_offsite"])
+        self.assertFalse(res["found"])
+
+    def test_sitemap_index_children_on_other_hosts_are_not_queued(self):
+        index = ('<sitemapindex><sitemap><loc>https://cdn.example.com/a.xml</loc></sitemap>'
+                 '<sitemap><loc>https://example.com/b.xml</loc></sitemap></sitemapindex>')
+
+        def fetch(url, **kwargs):
+            self.fetched.append(url)
+            if url.endswith("/sitemap.xml"):
+                return 200, index, {}
+            return 200, '<urlset><url><loc>https://example.com/b</loc></url></urlset>', {}
+        check_technical.parse_xml_sitemap(self.SITE + "/sitemap.xml", self.SITE, fetch_fn=fetch)
+        self.assertEqual(self.fetched, [self.SITE + "/sitemap.xml", "https://example.com/b.xml"])
+
+    def test_entity_expansion_sitemap_fails_safely_and_quickly(self):
+        import pyexpat
+        bomb = ('<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">'
+                + "".join(f'<!ENTITY lol{i} "' + f"&lol{i - 1};" * 10 + '">' for i in range(1, 10)).replace("&lol0;", "&lol;")
+                + ']><urlset><url><loc>&lol9;</loc></url></urlset>')
+        started = time.monotonic()
+        res = check_technical.parse_xml_sitemap(self.SITE + "/sitemap.xml", self.SITE, fetch_fn=lambda u, **k: (200, bomb, {}))
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertLess(sum(len(u) for u in res["urls"]), 10_000)  # nothing like the 10^9-character expansion
+        self.assertGreaterEqual(tuple(int(x) for x in pyexpat.EXPAT_VERSION.split("_")[1].split(".")), (2, 4, 1))
+
+
 class TestVerifierLoopbackBinding(unittest.TestCase):
     """Security phase 5: the original verifier's mock site listens on loopback only (it used all interfaces)."""
 
