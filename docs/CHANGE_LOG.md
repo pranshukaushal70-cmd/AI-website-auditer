@@ -545,3 +545,22 @@ well would remove the fallback but was not requested.
 | Frontend typecheck / `vitest` / `npm run build` | clean / 25 passed / exit 0 (asset hashes unchanged) |
 | Live server on a migration-1 database (scratchpad) | upgraded to schema 3; `/api/config.retention_days` null |
 | History layout re-check on the current build | 320/375/390 px: no overflow, all 8 cells visible; 768/1280 px pixel-identical to the session-9 screenshots |
+
+## Session 12 — 2026-10-25 (pre-push review: `.gitignore` hardening)
+
+A pre-push review found that `.gitignore` covered `backend/var/` but not stray secrets or databases elsewhere. Added:
+`.env` / `.env.*` (except `.env.example`), key and certificate files (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`,
+`id_ed25519*`), `credentials.json`, SQLite/DB files anywhere (`*.sqlite`, `*.sqlite3`, `*.sqlite3-*`, `*.db`,
+`*.db-journal`), `*.zip` (the original submission ZIP stays outside the repository), the temporary JSON files
+`verify_marketplace.py` writes to its working directory, logs, `*.tmp`/`*.bak`, `scratch/`, coverage output, `venv/`,
+`node_modules/` and `.DS_Store`. Verified with `git check-ignore` (every example path is ignored) and
+`git ls-files -ci --exclude-standard` (no tracked file becomes ignored). No source or test file changed.
+
+Re-verified on the current code before committing: backend 209 passed; engine 48 / 20 / 67 passed; evaluation tests
+10 passed and `--check` reproducible (`PYTHONHASHSEED` 0, 42); `verify_marketplace.py` exit 0; ruff clean; frontend
+typecheck clean, 25 tests passed, build exit 0. All 18 result files from the baseline commit are byte-identical
+(SHA-256 against `git show 327c83b:`).
+
+Note: the session scratchpad (outside the repository) was removed externally between runs, including earlier build
+backups, screenshots and a saved checksum list. Nothing in the repository was affected; Git now holds the reference
+copies.

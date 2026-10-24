@@ -9,3 +9,47 @@ frontend/dist/
 examples/reports/*.json
 # Editor-local settings (e.g. a Live Server port); not needed by the project.
 .vscode/
+
+# Secrets and credentials: never commit these.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials.json
+
+# Runtime databases anywhere (the platform's own database lives in backend/var/, ignored above).
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-journal
+
+# Archives, including the original submission ZIP, which is kept outside the repository.
+*.zip
+
+# Temporary outputs that verify_marketplace.py writes to its working directory (it deletes them on success).
+/tech_findings.json
+/trust_findings.json
+/engagement_findings.json
+/final_audit_report.json
+/mock_corroboration.json
+/clean_tech.json
+/clean_trust.json
+/clean_engage.json
+/clean_report.json
+
+# Scratch, logs, coverage, other environments, OS files.
+*.log
+*.tmp
+*.bak
+scratch/
+.coverage
+htmlcov/
+venv/
+node_modules/
+.DS_Store
