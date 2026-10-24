@@ -235,6 +235,18 @@ class TestPublicAddressRule(unittest.TestCase):
                     self.assertTrue(module._validate_public_http_url(url))
 
 
+def _offline_public_dns():
+    """Deterministic, offline DNS for example.com: a fixed public address (93.184.215.14), so URL validation still
+    applies its real public-address rule without a network lookup. Anything else is refused as unresolvable."""
+    import socket
+
+    def fake(host, port, family=0, type=0, proto=0, flags=0):
+        if str(host).lower() == "example.com":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", port or 0))]
+        raise socket.gaierror(f"offline test DNS: {host} is not resolvable")
+    return patch("socket.getaddrinfo", side_effect=fake)
+
+
 def _http_error(code):
     return urllib.error.HTTPError("https://example.com/x", code, "err", {}, None)
 
@@ -245,12 +257,14 @@ class TestErrorLabelling(unittest.TestCase):
         check_engagement.EXECUTION_ERRORS.clear()
 
     def test_d8_missing_sitemap_is_not_an_execution_error(self):
-        with patch("urllib.request.urlopen", side_effect=_http_error(404)):
+        # Patch target changed (security phase 6, approved option A) from urllib.request.urlopen: the sitemap is now
+        # fetched through the redirect-validating opener; OpenerDirector.open intercepts it offline.
+        with _offline_public_dns(), patch("urllib.request.OpenerDirector.open", side_effect=_http_error(404)):
             self.assertIsNone(check_trust.fetch_sitemap_lastmod("https://example.com"))
         self.assertEqual(check_trust.EXECUTION_ERRORS, [])
 
     def test_d8_sitemap_failure_is_not_labelled_as_corroboration(self):
-        with patch("urllib.request.urlopen", side_effect=_http_error(500)):
+        with _offline_public_dns(), patch("urllib.request.OpenerDirector.open", side_effect=_http_error(500)):  # option A, see above
             check_trust.fetch_sitemap_lastmod("https://example.com")
         self.assertTrue(check_trust.EXECUTION_ERRORS)
         self.assertNotIn("Wikipedia", check_trust.EXECUTION_ERRORS[0])
@@ -259,7 +273,9 @@ class TestErrorLabelling(unittest.TestCase):
     def test_missing_robots_txt_is_allowed_without_error(self):
         # Patch target changed (security phase 3, approved option A) from urllib.request.urlopen: robots.txt is now
         # fetched through a redirect-validating opener, and OpenerDirector.open intercepts both paths offline.
-        with patch("urllib.request.OpenerDirector.open", side_effect=_http_error(404)):
+        # _offline_public_dns (phase 6): URL validation resolves DNS before connecting; without it this test made a
+        # real lookup of example.com (a hidden network dependency since phase 3).
+        with _offline_public_dns(), patch("urllib.request.OpenerDirector.open", side_effect=_http_error(404)):
             allowed, _ = check_trust.robots_allows("https://example.com/")
             self.assertTrue(allowed)
             self.assertTrue(check_engagement.robots_allows("https://example.com/"))
@@ -862,6 +878,154 @@ class TestExternalCorroborationConsent(unittest.TestCase):
         self.assertEqual((b["scope"]["external_sources_checked"], b["scope"]["external_corroboration"]), (0, "unavailable"))
         self.assertTrue(any(c["check"] == "corroboration_check" for c in b["execution"]["unavailable_checks"]))
         self.assertEqual(b["execution"]["skipped_checks"], [])
+
+
+class TestSitemapFetchSafety(unittest.TestCase):
+    """Security phase 6, step 1: the trust stage's sitemap fetch (formerly a bare urlopen) validates the URL and
+    every redirect hop before connecting, follows same-host redirects only, and is bounded in size and time."""
+
+    def setUp(self):
+        import contextlib
+        import io
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.requests, self.route = [], ("200", "<urlset><url><lastmod>2026-05-01</lastmod></url></urlset>")
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                test.requests.append((self.headers.get("Host"), self.path))
+                kind, value = test.route if self.path == "/sitemap.xml" else ("200", "<urlset><url><lastmod>2025-02-02</lastmod></url></urlset>")
+                try:
+                    if kind == "redirect":
+                        self.send_response(302)
+                        self.send_header("Location", value)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    if kind == "slow":
+                        time.sleep(value)
+                        kind, value = "200", "<urlset><url><lastmod>2026-01-01</lastmod></url></urlset>"
+                    body = value.encode()
+                    self.send_response(int(kind))
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except OSError:
+                    pass  # the client gave up (timeout case)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self._saved = os.environ.get("BRAND_AUDIT_LOCAL_FIXTURE")
+        os.environ["BRAND_AUDIT_LOCAL_FIXTURE"] = str(self.port)  # the engine's narrow test-only allowance
+        check_trust._LOCAL_FIXTURE_WARNED = True
+        check_trust.EXECUTION_ERRORS.clear()
+        self._quiet = contextlib.redirect_stderr(io.StringIO())
+        self._quiet.__enter__()
+
+    def tearDown(self):
+        self._quiet.__exit__(None, None, None)
+        self.server.shutdown()
+        self.server.server_close()
+        os.environ.pop("BRAND_AUDIT_LOCAL_FIXTURE", None)
+        if self._saved is not None:
+            os.environ["BRAND_AUDIT_LOCAL_FIXTURE"] = self._saved
+        check_trust._LOCAL_FIXTURE_WARNED = False
+
+    def fetch(self):
+        return check_trust.fetch_sitemap_lastmod(self.base)
+
+    def errors(self):
+        return " ".join(check_trust.EXECUTION_ERRORS)
+
+    def test_sitemap_lastmod_is_parsed(self):
+        self.assertEqual(self.fetch(), 2026)
+        self.assertEqual(check_trust.EXECUTION_ERRORS, [])
+
+    def test_same_host_redirect_is_followed(self):
+        self.route = ("redirect", "/real-sitemap.xml")
+        self.assertEqual(self.fetch(), 2025)
+        self.assertEqual([p for _, p in self.requests], ["/sitemap.xml", "/real-sitemap.xml"])
+
+    def test_cross_host_redirect_is_not_followed(self):
+        self.route = ("redirect", f"http://localhost:{self.port}/sitemap.xml")  # allowed host, but a different one
+        self.assertIsNone(self.fetch())
+        self.assertEqual(self.requests, [(f"127.0.0.1:{self.port}", "/sitemap.xml")])
+        self.assertIn("redirect to another host not followed", self.errors())
+
+    def test_redirects_to_prohibited_destinations_are_refused_before_connecting(self):
+        for target in ("http://10.0.0.1/sitemap.xml", "http://192.168.1.1/sitemap.xml", "http://169.254.169.254/latest/meta-data/",
+                       f"http://127.0.0.1:{self.port + 1}/sitemap.xml", "http://[::1]/sitemap.xml",
+                       "ftp://127.0.0.1/sitemap.xml", "file:///etc/passwd"):
+            with self.subTest(target=target):
+                self.requests.clear()
+                check_trust.EXECUTION_ERRORS.clear()
+                self.route = ("redirect", target)
+                self.assertIsNone(self.fetch())
+                self.assertEqual([p for _, p in self.requests], ["/sitemap.xml"])  # nothing fetched after the redirect
+                self.assertIn("Sitemap lastmod fetch failed", self.errors())
+
+    def test_per_hop_validation_refuses_even_without_the_dns_guard(self):
+        """Defence in depth: with the connect-time DNS filter disabled, redirect validation alone must stop the hop
+        before any connection to the prohibited address is attempted."""
+        import contextlib
+        import socket
+        attempts = []
+        real_create = socket.create_connection
+
+        def watch(address, *args, **kwargs):
+            attempts.append(address[0])
+            if address[0] != "127.0.0.1":
+                raise AssertionError(f"connection attempted to {address}")
+            return real_create(address, *args, **kwargs)
+
+        for target in ("http://10.0.0.1/sitemap.xml", "http://169.254.169.254/latest/meta-data/", "http://[::1]/x"):
+            with self.subTest(target=target):
+                attempts.clear()
+                self.route = ("redirect", target)
+                with patch.object(check_trust, "_guarded_dns", contextlib.nullcontext), \
+                        patch("socket.create_connection", side_effect=watch):
+                    self.assertIsNone(self.fetch())
+                self.assertEqual(set(attempts), {"127.0.0.1"})  # only the audited site itself was contacted
+                self.assertIn("Blocked", self.errors())
+
+    def test_unsafe_starting_url_is_refused_without_any_request(self):
+        self.assertIsNone(check_trust.fetch_sitemap_lastmod("http://10.0.0.1"))
+        self.assertIsNone(check_trust.fetch_sitemap_lastmod(f"http://127.0.0.1:{self.port + 1}"))
+        self.assertEqual(self.requests, [])
+        self.assertIn("Blocked", self.errors())
+
+    def test_dns_failure_is_handled(self):
+        with _offline_public_dns():
+            self.assertIsNone(check_trust.fetch_sitemap_lastmod("https://unresolvable.invalid"))
+        self.assertIn("resolution failed", self.errors())
+
+    def test_oversized_sitemap_is_never_read_past_64_kib(self):
+        early = "<urlset><url><lastmod>2020-01-01</lastmod></url>"
+        late = "<url><lastmod>2026-01-01</lastmod></url></urlset>"
+        self.route = ("200", early + " " * (70 * 1024) + late)  # the 2026 entry lies beyond the 64 KiB cap
+        self.assertEqual(self.fetch(), 2020)
+
+    def test_timeout_is_handled(self):
+        self.route = ("slow", 4.5)  # longer than the 3 s sitemap timeout
+        started = time.monotonic()
+        self.assertIsNone(self.fetch())
+        self.assertGreaterEqual(time.monotonic() - started, 2.9)
+        self.assertIn("timed out", self.errors().lower())
+
+    def test_missing_sitemap_is_not_an_error(self):
+        for code in ("404", "410"):
+            self.route = (code, "missing")
+            self.assertIsNone(self.fetch())
+        self.assertEqual(check_trust.EXECUTION_ERRORS, [])
+        self.route = ("503", "down")
+        self.assertIsNone(self.fetch())
+        self.assertIn("HTTP 503", self.errors())
 
 
 class TestVerifierLoopbackBinding(unittest.TestCase):

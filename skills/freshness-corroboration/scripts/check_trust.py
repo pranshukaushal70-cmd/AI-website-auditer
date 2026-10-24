@@ -281,9 +281,20 @@ def _robots_unreachable_reason(status_code):
 
 
 def _fetch_robots_txt(robots_url, user_agent):
-    """Fetch robots.txt with the page fetchers' protections: every redirect hop is validated, cross-host
-    redirects are not followed, DNS answers are filtered at connect time, and the body is capped at 64 KiB.
-    Returns (status_code, text); status 0 means no HTTP response."""
+    """Fetch robots.txt (64 KiB, 5 s) through _fetch_validated_text. Returns (status_code, text)."""
+    return _fetch_validated_text(robots_url, user_agent, max_bytes=65536, timeout=5,
+                                 error_context=f"robots.txt fetch failed for {robots_url}")
+
+
+def _fetch_validated_text(url, user_agent, max_bytes, timeout, error_context):
+    """Fetch a small text resource from the audited site with the page fetchers' protections, failing closed.
+
+    The starting URL and every redirect destination are checked with _validate_public_http_url before any
+    connection (http/https only, no credentials, public addresses only after DNS resolution); cross-host
+    redirects are not followed; DNS answers are filtered again at connect time (_guarded_dns), so a rebinding
+    answer cannot reach a private, loopback or link-local address; the final URL is re-validated; at most
+    max_bytes are read. Returns (status_code, text): status 0 means no usable response (refused, DNS failure,
+    timeout, network error); a 3xx status means a redirect that was not followed."""
     class SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             _validate_public_http_url(newurl)
@@ -292,16 +303,17 @@ def _fetch_robots_txt(robots_url, user_agent):
             if src != dst:
                 return None  # surfaces as an HTTPError carrying the 3xx status
             return super().redirect_request(req, fp, code, msg, headers, newurl)
-    req=urllib.request.Request(robots_url,headers={"User-Agent":user_agent})
     try:
+        _validate_public_http_url(url)
+        req=urllib.request.Request(url,headers={"User-Agent":user_agent})
         opener=urllib.request.build_opener(SameHostRedirectHandler())
-        with _guarded_dns(), opener.open(req,timeout=5) as resp:
+        with _guarded_dns(), opener.open(req,timeout=timeout) as resp:
             _validate_public_http_url(resp.geturl())
-            return resp.getcode(), resp.read(65536).decode("utf-8",errors="replace")
+            return resp.getcode(), resp.read(max_bytes).decode("utf-8",errors="replace")
     except urllib.error.HTTPError as e:
         return e.code, ""
     except Exception as e:
-        _record_execution_error(f"robots.txt fetch failed for {robots_url}", e)
+        _record_execution_error(error_context, e)
         return 0, ""
 
 
@@ -618,21 +630,23 @@ def parse_year_from_date_str(date_str):
 
 def fetch_sitemap_lastmod(base_url):
     """Quickly inspects sitemap.xml for the latest lastmod date."""
+    # Same protections as robots.txt (security phase 6): validated URL and redirect hops, same host only, DNS
+    # filtering at connect time, 64 KiB, 3 s. It used a bare urlopen that followed redirects to any host.
+    sm_url = f"{base_url.rstrip('/')}/sitemap.xml"
     try:
-        sm_url = f"{base_url.rstrip('/')}/sitemap.xml"
         _respect_rate_limit(sm_url)
-        req = urllib.request.Request(sm_url, headers={'User-Agent': AUDIT_USER_AGENT})
-        with _guarded_dns(), urllib.request.urlopen(req, timeout=3) as resp:
-            text = resp.read(65536).decode('utf-8', errors='replace')
-            matches = re.findall(r'<lastmod>\s*(20\d{2})', text, re.IGNORECASE)
-            if matches:
-                return max([int(m) for m in matches])
-    except urllib.error.HTTPError as e:
-        # A missing sitemap is a normal site state, not an audit execution error.
-        if e.code not in (404, 410):
-            _record_execution_error("Sitemap lastmod fetch failed", e)
     except Exception as e:
         _record_execution_error("Sitemap lastmod fetch failed", e)
+        return None
+    status, text = _fetch_validated_text(sm_url, AUDIT_USER_AGENT, max_bytes=65536, timeout=3,
+                                         error_context="Sitemap lastmod fetch failed")
+    if 200 <= status < 300:
+        matches = re.findall(r'<lastmod>\s*(20\d{2})', text, re.IGNORECASE)
+        return max(int(m) for m in matches) if matches else None
+    # 0: already recorded by _fetch_validated_text. 404/410: a missing sitemap is a normal site state.
+    if status and status not in (404, 410):
+        reason = "redirect to another host not followed" if 300 <= status < 400 else f"HTTP {status}"
+        _record_execution_error("Sitemap lastmod fetch failed", RuntimeError(reason))
     return None
 
 
