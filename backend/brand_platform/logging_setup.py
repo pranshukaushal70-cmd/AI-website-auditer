@@ -9,7 +9,8 @@ import sys
 from datetime import UTC, datetime
 
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
-_EXTRA_KEYS = ("audit_id", "host", "partial", "report_version", "method", "path", "status_code", "duration_ms")
+_EXTRA_KEYS = ("audit_id", "host", "partial", "report_version", "method", "path", "status_code", "duration_ms",
+               "trigger", "retention_days", "deleted_audits", "deleted_reports", "deleted_findings", "wal_checkpoint_complete")
 
 
 class JsonFormatter(logging.Formatter):

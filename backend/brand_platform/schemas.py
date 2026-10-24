@@ -83,3 +83,4 @@ class PublicConfig(BaseModel):
     priority_model: str
     engine_version: str
     external_corroboration_available: bool  # False when the operator's offline switch disables external lookups
+    retention_days: int | None = None  # None: audits are kept indefinitely (retention disabled, the default)

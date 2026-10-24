@@ -78,6 +78,22 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
     (2, "per-audit external corroboration consent", [
         "ALTER TABLE audits ADD COLUMN external_corroboration INTEGER",
     ]),
+    # Audit retention (security phase 5). Additive only: an index for the age query and a log of purge runs that
+    # stores counts and the cutoff, never any content of the deleted audits.
+    (3, "audit retention", [
+        "CREATE INDEX idx_audits_finished ON audits(finished_at)",
+        """CREATE TABLE retention_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ran_at TEXT NOT NULL,
+            trigger TEXT NOT NULL,
+            retention_days INTEGER NOT NULL,
+            cutoff TEXT NOT NULL,
+            deleted_audits INTEGER NOT NULL,
+            deleted_reports INTEGER NOT NULL,
+            deleted_findings INTEGER NOT NULL,
+            skipped_undated INTEGER NOT NULL
+        )""",
+    ]),
 ]
 
 ACTIVE_STATUSES = ("queued", "running")
@@ -245,6 +261,58 @@ class Database:
             else:
                 row = conn.execute("SELECT report_json FROM reports WHERE audit_id = ? AND version = ?", (audit_id, version)).fetchone()
         return json.loads(row[0]) if row else None
+
+
+    # --- retention ---------------------------------------------------------------------------
+
+    def retention_candidates(self) -> list[dict]:
+        """Every finished audit with the fields the retention policy needs. Active audits are never returned."""
+        with self.connect() as conn:
+            rows = conn.execute(f"SELECT id, host, status, created_at, finished_at FROM audits WHERE status IN {TERMINAL_STATUSES}").fetchall()
+        return [dict(r) for r in rows]
+
+    def purge_audits(self, audit_ids: list[str], *, ran_at: str, trigger: str, retention_days: int, cutoff: str,
+                     skipped_undated: int) -> dict:
+        """Delete the given audits and their reports and findings (ON DELETE CASCADE), and log the run, atomically.
+
+        Each audit's status is re-checked inside the transaction, so an audit that is not in a finished state is
+        never deleted even if it was listed. secure_delete makes SQLite overwrite the freed content, and the WAL is
+        checkpointed and truncated afterwards; see docs/SECURITY.md for what this does and does not guarantee.
+        """
+        counts = {"deleted_audits": 0, "deleted_reports": 0, "deleted_findings": 0}
+        with self._write_lock, self.connect() as conn:
+            conn.execute("PRAGMA secure_delete = ON")
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                for start in range(0, len(audit_ids), 500):
+                    chunk = list(audit_ids[start:start + 500])
+                    marks = ",".join("?" * len(chunk))
+                    ids = [r[0] for r in conn.execute(
+                        f"SELECT id FROM audits WHERE id IN ({marks}) AND status IN {TERMINAL_STATUSES}", chunk)]
+                    if not ids:
+                        continue
+                    marks = ",".join("?" * len(ids))
+                    counts["deleted_reports"] += conn.execute(f"SELECT COUNT(*) FROM reports WHERE audit_id IN ({marks})", ids).fetchone()[0]
+                    counts["deleted_findings"] += conn.execute(f"SELECT COUNT(*) FROM findings WHERE audit_id IN ({marks})", ids).fetchone()[0]
+                    counts["deleted_audits"] += conn.execute(f"DELETE FROM audits WHERE id IN ({marks})", ids).rowcount
+                self._record_retention_run(conn, ran_at=ran_at, trigger=trigger, retention_days=retention_days,
+                                           cutoff=cutoff, skipped_undated=skipped_undated, **counts)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            busy, _log_frames, _checkpointed = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return dict(counts, wal_checkpoint_complete=not busy)
+
+    @staticmethod
+    def _record_retention_run(conn: sqlite3.Connection, **run) -> None:
+        conn.execute("INSERT INTO retention_runs (ran_at, trigger, retention_days, cutoff, deleted_audits, deleted_reports, "
+                     "deleted_findings, skipped_undated) VALUES (:ran_at, :trigger, :retention_days, :cutoff, :deleted_audits, "
+                     ":deleted_reports, :deleted_findings, :skipped_undated)", run)
+
+    def retention_runs(self) -> list[dict]:
+        with self.connect() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM retention_runs ORDER BY id")]
 
 
 def _audit_row(row: sqlite3.Row) -> dict:

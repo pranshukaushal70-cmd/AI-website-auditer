@@ -28,7 +28,7 @@ The API is local-only: loopback clients and `Host: localhost | 127.0.0.1 | [::1]
 | Method & path | Purpose |
 |---|---|
 | `GET /health` | `{status, version, schema_version}` |
-| `GET /config` | Public limits: `max_pages_cap`, `default_max_pages`, `allowed_ports`, `max_concurrent_jobs`, `max_queued_jobs`, `runtime_limit_seconds`, `rendering_enabled`, `priority_model`, `engine_version`, `external_corroboration_available` (false when the operator has switched external lookups off) |
+| `GET /config` | Public limits: `max_pages_cap`, `default_max_pages`, `allowed_ports`, `max_concurrent_jobs`, `max_queued_jobs`, `runtime_limit_seconds`, `rendering_enabled`, `priority_model`, `engine_version`, `external_corroboration_available` (false when the operator has switched external lookups off), `retention_days` (`null` = audits kept indefinitely, the default; otherwise the configured period) |
 | `POST /audits` | Body `{url, max_pages?, external_corroboration?}`. `max_pages` is 1–6. `external_corroboration` is a strict JSON boolean, default `false`: `true` opts in to sending the detected brand name to the Wikipedia/Wikidata search APIs. Returns **202** with an `Audit` in status `queued`. |
 | `GET /audits` | Query `status`, `q` (URL/host substring), `host`, `limit` (≤100), `offset`. Returns `{items, total, limit, offset}`, newest first. |
 | `GET /audits/{id}` | One `Audit`, including live `progress.stages` while it runs. |
@@ -46,6 +46,11 @@ Every `Audit` (list, detail and the `audit` object in `report.json`) carries `ex
 `scope.external_corroboration` says what actually happened (`skipped_by_user`, `unavailable`, `performed`, `not_run`), and
 `execution.skipped_checks` lists checks skipped at the user's request, separately from `unavailable_checks`. The PDF
 header shows both.
+
+### Retention
+There is no delete endpoint. When a retention period is configured, purged audits disappear from `GET /audits`, and
+every per-audit route (`/audits/{id}`, `/report`, `/report.json`, `/report.pdf`, `/findings`, `/readiness`) and
+`/compare` return **404** `audit_not_found` for them. See README "Audit retention".
 
 ### Audit statuses
 `queued` → `running` → one of `completed`, `partial` (the report exists but `execution.partial` is true), `failed`

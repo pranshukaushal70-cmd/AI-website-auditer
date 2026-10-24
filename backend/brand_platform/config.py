@@ -35,6 +35,24 @@ def _list(name: str, default: str) -> list[str]:
     return [x.strip() for x in os.environ.get(name, default).split(",") if x.strip()]
 
 
+RETENTION_MIN_DAYS, RETENTION_MAX_DAYS = 1, 3650
+
+
+def parse_retention_days(raw: str | None, source: str = "BRAND_PLATFORM_RETENTION_DAYS") -> int | None:
+    """Strict parser for the retention period. Unset or empty means retention is disabled (None).
+
+    Unlike the other numeric settings, a bad value is never clamped or ignored: it raises, so a typo can neither
+    delete data under a guessed period nor silently switch an intended policy off.
+    """
+    if raw is None or not raw.strip():
+        return None
+    text = raw.strip()
+    if not text.isascii() or not text.isdigit() or not RETENTION_MIN_DAYS <= int(text) <= RETENTION_MAX_DAYS:
+        raise ValueError(f"{source} must be a whole number of days from {RETENTION_MIN_DAYS} to {RETENTION_MAX_DAYS} "
+                         f"(leave it unset to keep audits indefinitely); got {raw!r}.")
+    return int(text)
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("BRAND_PLATFORM_DATA_DIR", REPO_ROOT / "backend" / "var")))
@@ -60,6 +78,15 @@ class Settings:
     frontend_dist: Path = field(default_factory=lambda: Path(os.environ.get("BRAND_PLATFORM_FRONTEND_DIST", REPO_ROOT / "frontend" / "dist")))
     # Largest accepted request body (the only body is {"url", "max_pages"}). Not environment-configurable.
     max_request_bytes: int = 64 * 1024
+    # Audit retention in days; None (the default) keeps audits indefinitely and nothing is ever deleted.
+    retention_days: int | None = field(default_factory=lambda: parse_retention_days(os.environ.get("BRAND_PLATFORM_RETENTION_DAYS")))
+
+    def __post_init__(self):
+        if self.retention_days is not None and not (
+                isinstance(self.retention_days, int) and not isinstance(self.retention_days, bool)
+                and RETENTION_MIN_DAYS <= self.retention_days <= RETENTION_MAX_DAYS):
+            raise ValueError(f"retention_days must be None or an int from {RETENTION_MIN_DAYS} to {RETENTION_MAX_DAYS}; "
+                             f"got {self.retention_days!r}.")
 
     @property
     def db_path(self) -> Path:

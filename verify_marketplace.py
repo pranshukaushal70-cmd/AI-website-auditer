@@ -89,10 +89,14 @@ class MockHTTPHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass # Suppress logging to keep console clean
 
+# Loopback only: the mock site must not be reachable from other machines while the verifier runs.
+# The target stays http://localhost:PORT/ (the report checks expect the "localhost" site name).
+MOCK_HOST = "127.0.0.1"
+
 def run_server():
     handler = MockHTTPHandler
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), handler) as httpd:
+    with socketserver.TCPServer((MOCK_HOST, PORT), handler) as httpd:
         httpd.serve_forever()
 
 def run_command(cmd):

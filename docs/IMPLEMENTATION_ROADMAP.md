@@ -100,8 +100,9 @@ Acceptance criteria:
 - ✅ Phase 4: external corroboration off by default in the platform, per-audit opt-in with a UI disclosure, DB migration
   2 (nullable; legacy audits "not recorded"), shown in history and exports, outages reported as unavailable, 256 KiB
   response cap, engine CLI default unchanged; 26 tests (9 engine, 11 backend, 6 frontend).
-- ⬜ Phase 5: retention disabled by default, configurable, with a manual purge command; the verifier's mock server binds
-  127.0.0.1.
+- ✅ Phase 5: retention disabled by default (`BRAND_PLATFORM_RETENTION_DAYS`, strict 1–3650), startup and daily purge
+  when configured, `python -m brand_platform.purge` (preview default, `--apply`), migration 3, secure_delete, the
+  verifier's mock server on 127.0.0.1; 45 tests (43 backend, 2 engine).
 
 ## Next session (recommended order)
 1. Owner: `git init` and make a first commit so CI can run and later changes are reviewable as diffs; keep the original

@@ -864,6 +864,60 @@ class TestExternalCorroborationConsent(unittest.TestCase):
         self.assertEqual(b["execution"]["skipped_checks"], [])
 
 
+class TestVerifierLoopbackBinding(unittest.TestCase):
+    """Security phase 5: the original verifier's mock site listens on loopback only (it used all interfaces)."""
+
+    def test_run_server_binds_127_0_0_1(self):
+        sys.path.insert(0, str(ROOT))
+        import verify_marketplace as vm
+        bound = []
+
+        class FakeServer:
+            def __init__(self, address, handler):
+                bound.append(address)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def serve_forever(self):
+                return None
+
+        with patch.object(vm.socketserver, "TCPServer", FakeServer):
+            vm.run_server()
+        self.assertEqual(bound, [("127.0.0.1", vm.PORT)])
+        self.assertEqual(vm.MOCK_HOST, "127.0.0.1")
+
+    def test_localhost_target_still_reaches_an_ipv4_loopback_server(self):
+        """'localhost' may resolve to ::1 first (it does on Windows); the IPv4 fallback must still connect."""
+        import socketserver
+        import threading
+        import urllib.request
+        from http.server import BaseHTTPRequestHandler
+
+        class Ok(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *args):
+                pass
+
+        server = socketserver.TCPServer(("127.0.0.1", 0), Ok)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            self.assertEqual(server.socket.getsockname()[0], "127.0.0.1")
+            with urllib.request.urlopen(f"http://localhost:{server.server_address[1]}/", timeout=10) as r:
+                self.assertEqual(r.read(), b"ok")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 class TestLegacyLocalFixtureOverride(unittest.TestCase):
     """Security-hardening phase 2: BRAND_AUDIT_LOCAL_FIXTURE stays narrow and is never silent."""
 

@@ -25,6 +25,7 @@ from .exposure import ExposureGuard, is_loopback_origin
 from .logging_setup import configure_logging, request_id_var
 from .pdf_report import render_pdf
 from .prioritization import MODEL_VERSION
+from .retention import RetentionScheduler
 from .runner import AdmissionError, JobManager, engine_version
 from .schemas import Audit, AuditList, AuditStatus, CreateAuditRequest, FindingList, PublicConfig
 from .urlsafety import UnsafeURLError, validate_audit_url
@@ -87,7 +88,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.db = Database(settings.db_path)
         app.state.jobs = JobManager(settings, app.state.db)
         app.state.rate_limiter = CreationRateLimiter(limit=settings.creation_rate_limit)
+        # Retention runs only when a policy is configured; it never blocks startup and stops before the job runner.
+        app.state.retention = RetentionScheduler(app.state.db, settings.retention_days) if settings.retention_days else None
+        if app.state.retention:
+            app.state.retention.start()
         yield
+        if app.state.retention:
+            app.state.retention.stop()
         app.state.jobs.shutdown()
 
     app = FastAPI(title="Brand AI-Readiness Intelligence Platform API", version=__version__, lifespan=lifespan,
@@ -167,7 +174,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             allowed_ports=list(settings.allowed_ports), max_concurrent_jobs=settings.max_concurrent_jobs,
                             max_queued_jobs=settings.max_queued_jobs, runtime_limit_seconds=settings.runtime_limit_seconds,
                             rendering_enabled=False, priority_model=MODEL_VERSION, engine_version=engine_version(),
-                            external_corroboration_available=not settings.offline_corroboration)
+                            external_corroboration_available=not settings.offline_corroboration,
+                            retention_days=settings.retention_days)
 
     # --- audits -----------------------------------------------------------------------------
 

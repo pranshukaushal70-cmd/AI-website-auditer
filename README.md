@@ -230,12 +230,37 @@ Configuration is through environment variables (all optional): `BRAND_PLATFORM_D
 `BRAND_PLATFORM_MAX_CONCURRENT_JOBS` (2), `BRAND_PLATFORM_MAX_QUEUED_JOBS` (10), `BRAND_PLATFORM_DEFAULT_MAX_PAGES` (4),
 `BRAND_PLATFORM_RUNTIME_LIMIT` (240 s), `BRAND_PLATFORM_STAGE_TIMEOUT` (60 s), `BRAND_PLATFORM_ALLOWED_PORTS` (80,443),
 `BRAND_PLATFORM_CREATE_RATE_LIMIT` (12 per 10 min), `BRAND_PLATFORM_CORS_ORIGINS`,
-`BRAND_PLATFORM_OFFLINE_CORROBORATION=1` (operator kill switch for Wikipedia/Wikidata lookups; overrides any opt-in).
+`BRAND_PLATFORM_OFFLINE_CORROBORATION=1` (operator kill switch for Wikipedia/Wikidata lookups; overrides any opt-in),
+`BRAND_PLATFORM_RETENTION_DAYS` (unset = keep audits indefinitely; see below).
 
 Wikipedia/Wikidata corroboration is **off by default** in the platform. Each audit opts in with a checkbox on the New
 Audit page, which explains that the detected brand name is sent to those public APIs. The choice is recorded per
 audit and shown in history and in the JSON/PDF exports. The engine command line still corroborates by default; set
 `BRAND_AUDIT_EXTERNAL_CORROBORATION=off` to opt out there.
+
+### Audit retention (off by default)
+
+Audits are kept **indefinitely** unless you set `BRAND_PLATFORM_RETENTION_DAYS` to a whole number of days from 1 to
+3650. Any other value (`0`, `30d`, `-1`, `1.5`) stops the server with a clear error rather than guessing. With a period
+set, a **finished** audit (completed, partial, failed, timed out, cancelled or interrupted) is deleted together with its
+reports and findings once its `finished_at` is more than N days old; `created_at` is used only for a finished audit with
+no `finished_at`. Queued and running audits are never deleted. An audit interrupted by a server restart counts as
+finished at that restart. The server purges at startup and then every 24 hours, in a background thread that never
+blocks startup and stops at shutdown. There is no HTTP endpoint that deletes audits.
+
+Manual purge (run from `backend/`, against the database in `BRAND_PLATFORM_DATA_DIR`). **Preview is the default and
+deletes nothing:**
+
+```powershell
+..\.venv\Scripts\python -m brand_platform.purge                          # preview using BRAND_PLATFORM_RETENTION_DAYS
+..\.venv\Scripts\python -m brand_platform.purge --older-than-days 90     # preview with an explicit period
+..\.venv\Scripts\python -m brand_platform.purge --older-than-days 90 --apply   # delete what the preview lists
+```
+
+Each applied purge is logged in the `retention_runs` table (date, trigger, period, cutoff and counts only; never the
+deleted content). Deleted rows are overwritten in the database file (SQLite `secure_delete`) and the write-ahead log is
+truncated. That is **not** a guarantee of forensic erasure: backups, copies of the file, previously downloaded JSON/PDF
+exports, filesystem snapshots, SSD wear-levelling and OS caches are outside its reach (`docs/SECURITY.md`).
 
 There is **no authentication**, so the platform is **local-only by design**. It refuses non-loopback clients, Host
 headers other than `localhost`/`127.0.0.1`/`[::1]`, cross-site state-changing requests, non-JSON bodies, and bodies over

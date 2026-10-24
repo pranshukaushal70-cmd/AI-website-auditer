@@ -105,6 +105,25 @@ with `X-Request-ID` and the security headers.
 - Stored: audit metadata, the composed report (findings and evidence snippets), and prioritisation. Not stored: raw
   page HTML, sub-audit working files (each job's work directory is deleted), or request headers.
 - Logs are structured JSON with request id, path, status and duration. No request bodies and no secrets are logged.
+- **Retention (security phase 5, 2026-10-25).** Off by default: with `BRAND_PLATFORM_RETENTION_DAYS` unset, nothing is
+  ever deleted.
+  - A set value must be a whole number from 1 to 3650, or the server refuses to start (no clamping, no guessing).
+  - Expired means a finished audit whose `finished_at` (or `created_at` if it never finished) is strictly older than
+    now − N days. Queued and running audits are excluded, and each audit's status is re-checked inside the delete
+    transaction. Audits with unreadable timestamps are never deleted.
+  - Deletion is one transaction per run: audits, reports and findings together (`ON DELETE CASCADE`), plus a
+    `retention_runs` row holding only date, trigger, period, cutoff and counts.
+  - The server purges at startup and every 24 hours in a daemon thread (errors are logged and retried, startup is never
+    blocked, the thread stops at shutdown). `python -m brand_platform.purge` previews by default and deletes only with
+    `--apply`. No network-accessible delete endpoint exists.
+  - **Erasure limits:** the purge connection enables SQLite `secure_delete`, so freed pages are overwritten, and the WAL
+    is checkpointed with `TRUNCATE` (if a reader holds the WAL, the checkpoint reports busy and old frames remain until
+    a later checkpoint). This does not reach backups or copies of the database, exported JSON/PDF files, filesystem
+    snapshots or journaling, SSD wear-levelling or remapped blocks, or OS page caches. Treat it as best-effort
+    in-database overwriting, not forensic erasure.
+  - Logs from a purge contain counts only (no ids, hosts or URLs).
+  - Tests: `backend/tests/test_retention.py` (43), including a file-level check that deleted URLs, hosts, report and
+    finding text no longer appear in the database files (and that the same check fails with `secure_delete` off).
 
 ## Known gaps (not implemented)
 - **No authentication or authorisation.** Every local process and local user on the machine can start audits and read
@@ -113,7 +132,10 @@ with `X-Request-ID` and the security headers.
 - The rate limiter is in memory and keyed on the client IP, which is always a loopback address now. It still throttles
   runaway local clients, but it resets on restart and cannot tell local users apart.
 - `_guarded_dns()` monkey-patches `socket.getaddrinfo` process-wide. That is safe only because each audit runs in its own process.
-- No automatic data-retention purge.
+- Retention is off by default (by decision). An operator who wants deletion must set `BRAND_PLATFORM_RETENTION_DAYS`.
+- The original verifier's mock server now binds `127.0.0.1` (O8, resolved in phase 5). It still uses a fixed port,
+  8999, and its `localhost` target pays a measured ~2 s per connection on this machine because `localhost` resolves to
+  `::1` first. That cost was already present with the old all-interfaces IPv4 binding.
 - **Third-party disclosure (O5; resolved for the platform in security phase 4, 2026-10-25).** External corroboration is
   **off by default** and opt-in per audit:
   - The New Audit page has an unchecked checkbox. Its disclosure says that the brand name detected on the site is sent to

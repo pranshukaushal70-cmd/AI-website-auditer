@@ -466,3 +466,82 @@ the tracked files found no credentials, keys or `.env` files.
   (`README.md:58` in the original skills section, the four engine scripts, `tests/test_all_rubric_cases.py`,
   `verify_marketplace.py`) and, because of their CRLF endings, in the byte-exact result files. Every file added or
   changed by the platform work passes the check. The original code was not reformatted, to avoid unrelated changes.
+
+## Session 11 — 2026-10-25 (security hardening, phase 5 of 5: audit retention; approved)
+
+Built on the local baseline commit `327c83b`. The original submitted ZIP was not touched. No `.env` file, secret,
+SSRF/DNS/redirect protection, API exposure rule or Phase 1–4 behaviour was changed. Every destructive operation ran
+only against pytest temporary databases or throwaway scratchpad databases. No real platform database exists in this
+workspace.
+
+### Design (as approved)
+- `BRAND_PLATFORM_RETENTION_DAYS`: unset (the default) keeps audits indefinitely. A set value must be a whole number
+  from 1 to 3650, or the server refuses to start; it is never clamped (unlike the other numeric settings).
+  `/api/config.retention_days` is `null` when retention is disabled.
+- Expired: a finished audit whose `finished_at` (fallback `created_at` if it never finished) is **strictly** older than
+  now − N days. Queued and running audits are never candidates, and status is re-checked inside the delete
+  transaction. Unreadable timestamps are never deleted (counted as "undated"). Note: at startup the job manager marks
+  leftover queued and running audits as `interrupted` with `finished_at` = now, so they become eligible only N days
+  after that restart.
+- `Database.purge_audits`: one transaction (audits, with reports and findings via `ON DELETE CASCADE`, plus the
+  `retention_runs` row); `PRAGMA secure_delete = ON`; `wal_checkpoint(TRUNCATE)` afterwards.
+- Scheduler: when a policy is set, `RetentionScheduler` (a daemon thread) purges at startup and every 24 h. Errors are
+  logged and retried, startup is never blocked, it stops in the lifespan shutdown before the job runner, and its wait
+  is interruptible.
+- `python -m brand_platform.purge [--older-than-days N] [--apply]`: preview by default, `--apply` to delete, the same
+  strict 1–3650 validation, a no-op when retention is disabled and no override is given, and it never creates a
+  database.
+- No HTTP delete endpoint was added.
+
+### Changed files
+| File | Change |
+|---|---|
+| `backend/brand_platform/config.py` | `parse_retention_days()` (strict), `Settings.retention_days` (env; default `None`), `__post_init__` validation. |
+| `backend/brand_platform/db.py` | Migration 3 (index `idx_audits_finished`, table `retention_runs`; additive); `retention_candidates()`, `purge_audits()`, `_record_retention_run()`, `retention_runs()`. Migrations 1–2 unchanged. |
+| `backend/brand_platform/retention.py` (new) | `plan()` (read-only), `apply()`, `RetentionScheduler`, timestamp parsing. |
+| `backend/brand_platform/purge.py` (new) | The manual CLI. |
+| `backend/brand_platform/main.py` | Starts and stops the scheduler only when a policy is set; `retention_days` in `/api/config`. Imports sorted by ruff (`I001`). |
+| `backend/brand_platform/schemas.py` | `PublicConfig.retention_days`. |
+| `backend/brand_platform/logging_setup.py` | The purge count fields are allowed in structured logs. |
+| `verify_marketplace.py` | `MOCK_HOST = "127.0.0.1"`; the mock site binds loopback instead of all interfaces (O8). The target stays `http://localhost:8999/`. |
+| `backend/tests/test_retention.py` (new) | 43 tests: config parsing (7 valid, 10 invalid), the default-off and env startup error, the config API, exact cutoff boundaries (1 s past is expired; exactly N days is kept, at N=30 and N=1), queued/running never, `created_at` fallback, `finished_at` precedence, undated kept, preview deletes nothing, apply deletes exactly the expired audits with reports and findings while legacy NULL consent stays NULL, in-transaction status re-check, rollback on failure, a purge log without content, deleted content absent from the database files, every API view 404 after purge, migration 3 from schema 1 and 2, the CLI (no-op, never creates a DB, preview, apply, env policy, invalid input), and the scheduler (startup purge, clean stop, failure never blocks startup, prompt stop). |
+| `tests/test_engine_fixes.py` | `TestVerifierLoopbackBinding` (2 tests): `run_server()` binds `("127.0.0.1", 8999)` (the baseline commit's verifier binds `("", 8999)`, so the test detects the old behaviour), and `http://localhost` still reaches an IPv4 loopback server. |
+| `backend/tests/test_corroboration_consent.py` | **Existing assertion updated:** the phase-4 migration test asserted `schema_version() == 2`, which became false by design with migration 3. It now asserts `MIGRATIONS[-1][0]`, the pattern already used in `test_db_runner_pdf.py`. Its legacy-preservation checks are unchanged and now also run through migration 3. |
+| `README.md`, `docs/SECURITY.md`, `docs/API_REFERENCE.md`, `docs/PROJECT_AUDIT.md` (O8), `docs/IMPLEMENTATION_ROADMAP.md`, `docs/TESTING_AND_EVALUATION.md` | Retention configuration, commands, erasure limits, API behaviour, test counts. |
+
+### Corrected during the session (mistakes in the new tests, not in the code)
+- The first run of `test_retention.py` had two failures; both were wrong expectations or setups in the new tests:
+  1. With N=1, audit C finished exactly one day earlier, which is exactly at the cutoff, so it is kept under the
+     documented strict rule. The expectation was corrected, and the case now asserts that boundary.
+  2. The test helper generated ids such as `"RRRR…"`, which the API rejects (`^[0-9a-f]{32}$`) with a 404 regardless of
+     retention, so the API-after-purge test had **passed for the wrong reason**. Ids are now lowercase hex, and the test
+     first asserts 200 before purging, so a later 404 can only come from the purge.
+- Sensitivity checks: with `secure_delete` OFF, the deleted audit's URL, report and finding text remained in the file
+  after deletion and checkpoint; with it ON, none did. So the file-level test detects the protection.
+
+### Verifier timing (measured; not caused by this phase)
+`localhost` resolves to `::1` first on this machine. The mock server is IPv4-only, both before (`""`) and now
+(`127.0.0.1`), so every request pays a ~2 s IPv6 fallback either way (direct measurement: 2.0–3.1 s per request in both
+cases). The verifier from the baseline commit (via a temporary `git worktree`) took 94 s, and the phase-5 verifier 96 s,
+run back to back. The growth from ~60 s (session 2) happened before the baseline, most plausibly from the per-page
+robots.txt checks added in security phase 3 (each pays the fallback); this was not measured further. Binding `::1` as
+well would remove the fallback but was not requested.
+
+### New files (evaluation)
+- `evaluation/results/v1/post-security-phase5.{json,md}`: identical in every verdict and metric to the canonical
+  `results.json` (micro F1 0.92, 6 errors). All 18 committed result files are byte-identical to the baseline commit
+  (SHA-256 against `git show HEAD:`), and the 16 historically recorded checksums still match.
+
+### Verification
+| Check | Result |
+|---|---|
+| `backend/tests/test_retention.py` / `TestVerifierLoopbackBinding` | 43 passed / 2 passed |
+| `backend: pytest` (full) | 209 passed (166 + 43) |
+| Engine `test_all_rubric_cases` / `test_round3_polish` / `test_engine_fixes` | 48 / 20 / 67 passed |
+| `tests/repro_d15_redirect_chain.py` | exit 0 |
+| `verify_marketplace.py` (from a scratch directory) | exit 0 |
+| `ruff check backend evaluation` | clean |
+| `evaluation/test_evaluation.py` / `run_evaluation.py --check` | 10 passed / reproducible (`PYTHONHASHSEED` 0, 1, 42) |
+| Frontend typecheck / `vitest` / `npm run build` | clean / 25 passed / exit 0 (asset hashes unchanged) |
+| Live server on a migration-1 database (scratchpad) | upgraded to schema 3; `/api/config.retention_days` null |
+| History layout re-check on the current build | 320/375/390 px: no overflow, all 8 cells visible; 768/1280 px pixel-identical to the session-9 screenshots |

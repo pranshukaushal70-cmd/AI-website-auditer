@@ -36,12 +36,12 @@ def test_migration_2_preserves_legacy_audits_and_leaves_consent_unrecorded(tmp_p
 
     monkeypatch.undo()
     upgraded = Database(path)
-    assert upgraded.schema_version() == 2
+    assert upgraded.schema_version() == db_module.MIGRATIONS[-1][0]  # fully upgraded (2 when written; 3 since phase 5)
     audit = upgraded.get_audit("b" * 32)
     assert audit["external_corroboration"] is None  # not backfilled, not guessed
     assert (audit["url"], audit["status"], audit["readiness_score"], audit["report_version"]) == ("https://old.example/", "completed", 81.5, 1)
     assert upgraded.get_report("b" * 32) == legacy_report
-    assert Database(path).schema_version() == 2  # re-running migrations is a no-op
+    assert Database(path).schema_version() == db_module.MIGRATIONS[-1][0]  # re-running migrations is a no-op
 
 
 def test_new_audits_always_record_an_explicit_choice(tmp_path):

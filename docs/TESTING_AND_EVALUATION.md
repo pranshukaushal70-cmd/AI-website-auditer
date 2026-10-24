@@ -11,12 +11,12 @@ generated file, that file is the authority, and this document points to it.
 |---|---|---|---|
 | `tests/test_all_rubric_cases.py` | Original 48 engine checks | `python tests/test_all_rubric_cases.py` | 48 passed |
 | `tests/test_round3_polish.py` | Original 20 Round-3 checks | `python tests/test_round3_polish.py` | 20 passed |
-| `tests/test_engine_fixes.py` | Regression tests for D1–D8, D11–D15 and security phases 2–3 (the D15 and robots.txt tests use real sockets and the real fetchers) | `python tests/test_engine_fixes.py` | 65 passed (after security phase 4) |
+| `tests/test_engine_fixes.py` | Regression tests for D1–D8, D11–D15 and security phases 2–3 (the D15 and robots.txt tests use real sockets and the real fetchers) | `python tests/test_engine_fixes.py` | 67 passed (after security phase 5) |
 | `verify_marketplace.py` | Original offline end-to-end verifier (runs the three suites above) | `python verify_marketplace.py` | exit 0 |
 | `evaluation/test_evaluation.py` | Metric arithmetic, dataset integrity, fixture fidelity, reproducibility | `python evaluation/test_evaluation.py` | 10 passed (after the approved refresh of `results.json`, 2026-10-25) |
 | `evaluation/run_evaluation.py --check` | Re-runs the detector evaluation; fails if results differ from the committed ones | see §7 | reproducible against the refreshed `results.json` (`PYTHONHASHSEED` 0, 1, 2, 3, 7, 42) |
 | `tests/repro_d15_redirect_chain.py` | Standalone D15 reproduction (not part of any suite) | `python tests/repro_d15_redirect_chain.py` | exit 0 after the fix (exit 1 before) |
-| `backend/tests` | API, URL safety, DB, runner, PDF, prioritisation, comparison, readiness-v2; real offline end-to-end audits of a local fixture site | `cd backend && python -m pytest` | 166 passed (after security phase 4) |
+| `backend/tests` | API, URL safety, DB, runner, PDF, prioritisation, comparison, readiness-v2; real offline end-to-end audits of a local fixture site | `cd backend && python -m pytest` | 209 passed (after security phase 5) |
 | `frontend/src/app.test.tsx` | URL pre-check, formatting, findings filter/explorer, progress stepper, API client errors | `cd frontend && npm test` | 24 passed (after security phase 4) |
 | Static checks | `ruff check` (backend, evaluation); `tsc --noEmit` (frontend) | see §7 | clean |
 
