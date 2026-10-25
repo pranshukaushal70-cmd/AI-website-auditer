@@ -929,6 +929,36 @@ def select_crawl_candidates(homepage_url, internal_links, sitemap_urls, max_page
 
 SITEMAP_PATH_CANDIDATES = ["/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml", "/sitemap-index.xml", "/sitemaps/sitemap.xml"]
 
+
+# Email detection (security phase 6). The original pattern r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}' was
+# quadratic on long runs of word characters: at every start position [\w.+-]+ consumed the rest of the run before
+# failing to find '@' (100,000 characters of page text took about 130 s, so a hostile page could stall the stage
+# until its timeout). find_emails returns exactly what re.findall returned with that pattern (verified on 300,000
+# curated and fuzzed inputs) in linear time: each '@' is visited once, the local part is scanned backwards only as
+# far as the previous match, and the original domain pattern is matched once, anchored after the '@'. The same
+# helper is defined in each standalone engine script, which share no module.
+_EMAIL_LOCAL_CHAR = re.compile(r'[\w.+-]')
+_EMAIL_DOMAIN = re.compile(r'[\w.-]+\.[A-Za-z]{2,}')
+
+
+def find_emails(text):
+    r"""Return the email-like strings re.findall(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', text) would return, in linear time."""
+    text = text or ""
+    found, pos = [], 0
+    at = text.find('@')
+    while at != -1:
+        start = at
+        while start > pos and _EMAIL_LOCAL_CHAR.match(text, start - 1):
+            start -= 1
+        match = _EMAIL_DOMAIN.match(text, at + 1) if start < at else None
+        if match:
+            found.append(text[start:match.end()])
+            pos = match.end()
+            at = text.find('@', pos)
+        else:
+            at = text.find('@', at + 1)
+    return found
+
 def _extract_machine_facts(text):
     text=text or ""
     prices=set(re.findall(r'(?:[$€£₹]|USD|EUR|GBP|INR)\s*\d+(?:[,.]\d{1,2})?', text, re.I))
@@ -940,7 +970,7 @@ def _extract_machine_facts(text):
         symbol={"USD":"$","EUR":"€","GBP":"£","INR":"₹"}.get(cur,cur)
         prices.add(f"{symbol}{m.group(1)}")
     return {
-        "emails": sorted(set(re.findall(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', text)))[:10],
+        "emails": sorted(set(find_emails(text)))[:10],
         "phones": sorted(set(re.findall(r'\+?\d{1,3}[\s.-]?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3}[\s.-]?\d{3,4}', text)))[:10],
         "prices": sorted(prices)[:20]
     }

@@ -8,6 +8,7 @@ are deterministic and do not touch the network.
 import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1184,6 +1185,88 @@ class TestProgressWriteReliability(unittest.TestCase):
         with patch.object(run_audit, "run", fake_run), patch.object(sys, "argv", argv):
             self.assertEqual(run_audit.main(), 0)  # control: the same run succeeds when the write succeeds
         self.assertEqual(self.stored()["compose"], "completed")
+
+
+class TestEmailDetectionIsLinear(unittest.TestCase):
+    """Security phase 6: the three stages' email regexes were quadratic on long word-character runs (100,000
+    characters took about 130 s). find_emails must return exactly what each original regex returned, and finish
+    quickly on 2 MB hostile page text."""
+
+    ORIGINAL = {  # module: (original pattern, flags) exactly as it was used
+        "check_technical": (r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', 0),
+        "check_trust": (r'[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}', 0),
+        "check_engagement": (r'[\w.+-]+@[\w.-]+\.[a-z]{2,}', re.I),
+    }
+    CURATED = [
+        "", "@", "@@", "a@", "@b.com", "a@b", "a@b.c", "a@b.co", "A@B.COM", "a.b+c-d_e@sub.example.co.uk",
+        "Mail sales@example.com or j.doe+x@mail.co.uk today.", "<a href='mailto:info@brand.io'>info@brand.io</a>",
+        '"john doe"@example.com', '"john@doe"@example.com', "o'brien@example.ie", "user%tag@example.com",
+        "a@[192.168.0.1]", "a@localhost", "a@b..com", "a@.com", ".a@b.com", "a@b.com.", "a@b.c0m", "a@b.com9",
+        "a@b.co9x@c.de", "a@b.comc@d.ef", "a@b.com@c.de", "a@@b.com", "a@b.com,c@d.org;e@f.net",
+        "jöhn@exämple.de", "用户@例子.广告", "用户@例子.com", "δοκιμή@παράδειγμα.δοκιμή", "x@y.Kb", "x@y.ſx",
+        "x@y.İx", "x@y.ıx", "a​@b.com", "a b@c.com", "1@2.34", "1@2.ab", "____@____.__",
+        "a" * 300 + "@" + "b" * 300 + ".com", "x" * 3000 + " a@b.com", "a@b.com " + "@" * 3000, ("a@" + "b" * 50) * 60,
+    ]
+    HOSTILE = {
+        "word-run": "x" * (2 * 1024 * 1024),
+        "digit-run": "7" * (2 * 1024 * 1024),
+        "at-runs": ("a@" + "b" * 1000) * 2093,
+        "dots": "a." * (1024 * 1024),
+        "alternating": "a@" * (1024 * 1024),
+    }
+
+    def modules(self):
+        return {"check_technical": check_technical, "check_trust": check_trust, "check_engagement": check_engagement}
+
+    def test_matches_the_original_regex_exactly(self):
+        import random
+        rnd = random.Random(20261025)
+        alphabet = list("abcxyzABCXYZ019_.+-@ \t\n,;:<>\"'()[]%") + list("éüßøç用户δοκKſİı​ ")
+        weights = [6 if c.isalnum() else 3 if c in ".@-+_" else 1 for c in alphabet]
+        fuzz = ["".join(rnd.choices(alphabet, weights, k=rnd.randint(1, rnd.choice((20, 80, 400))))) for _ in range(20000)]
+        for name, module in self.modules().items():
+            pattern, flags = self.ORIGINAL[name]
+            original = re.compile(pattern, flags)
+            for text in self.CURATED + fuzz:
+                self.assertEqual(module.find_emails(text), original.findall(text), (name, text[:80]))
+                self.assertEqual(bool(module.find_emails(text)), bool(original.search(text)), (name, text[:80]))
+
+    def test_the_three_copies_differ_only_in_their_original_domain_pattern(self):
+        import inspect
+        sources = {name: inspect.getsource(m.find_emails) for name, m in self.modules().items()}
+        normalised = {re.sub(r"r'\[\\w\.\+-\]\+@[^']*', text(, re\.I)?", "PATTERN", s) for s in sources.values()}
+        self.assertEqual(len(normalised), 1, "find_emails copies have drifted apart")
+        for name, module in self.modules().items():
+            pattern, flags = self.ORIGINAL[name]
+            self.assertEqual(module._EMAIL_LOCAL_CHAR.pattern, r'[\w.+-]')
+            self.assertEqual("[\\w.+-]+@" + module._EMAIL_DOMAIN.pattern, pattern)
+            self.assertEqual(module._EMAIL_DOMAIN.flags & re.I, flags & re.I)
+
+    def test_two_megabyte_hostile_text_takes_linear_work(self):
+        """Deterministic: count the scanner's pattern calls instead of timing them (wall-clock limits are flaky on
+        loaded machines). Local-part character checks are at most len(text) and domain matches at most one per
+        '@'; domain runs end at the next '@', so they never overlap and the domain regex's work is also linear."""
+
+        class Counting:
+            def __init__(self, pattern):
+                self.pattern, self.calls = pattern, 0
+
+            def match(self, *args):
+                self.calls += 1
+                return self.pattern.match(*args)
+
+        for label, text in self.HOSTILE.items():
+            for name, module in self.modules().items():
+                local, domain = Counting(module._EMAIL_LOCAL_CHAR), Counting(module._EMAIL_DOMAIN)
+                started = time.monotonic()
+                with patch.object(module, "_EMAIL_LOCAL_CHAR", local), patch.object(module, "_EMAIL_DOMAIN", domain):
+                    module.find_emails(text)
+                self.assertLessEqual(local.calls, len(text), (label, name))
+                self.assertLessEqual(domain.calls, text.count("@"), (label, name))
+                if "@" in text:  # the scanner must really be the code doing the work (not a bare regex call)
+                    self.assertGreater(domain.calls, 0, (label, name))
+                # Hang guard only. Measured 0-2.5 s here; the original regex needs hours at this size.
+                self.assertLess(time.monotonic() - started, 120.0, (label, name))
 
 
 class TestVerifierLoopbackBinding(unittest.TestCase):

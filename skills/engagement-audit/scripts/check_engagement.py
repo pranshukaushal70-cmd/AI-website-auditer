@@ -487,7 +487,7 @@ def _answerability_analysis(parser, ctas_found):
     identity=bool(h1 and len(h1.split())>=3) or bool(title and len(title.split())>=4)
     offer=bool(re.search(r'\b(product|service|platform|software|tool|app|solution|agency|consulting|marketplace|store|shop)\b', lower))
     audience=bool(re.search(r'\b(for|built for|designed for|used by|serves|help(?:s)?|teams?|businesses|developers|creators|students|customers)\b[^.]{0,100}', lower))
-    contact=bool(re.search(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}', combined, re.I) or re.search(r'\b(contact|support|sales|call us|email us|phone)\b', lower))
+    contact=bool(find_emails(combined) or re.search(r'\b(contact|support|sales|call us|email us|phone)\b', lower))
     next_step=bool(ctas_found) or bool(re.search(r'\b(get started|buy|book|request|schedule|sign up|start|try|download|contact|explore|learn more|subscribe|apply|join)\b', lower))
     questions=_question_answer_pairs(combined)
     # Quote-ready: concise explicit answers near question-like headings, or short declarative definition sentences.
@@ -517,6 +517,36 @@ def _deep_link_analysis(parser, ctas_found):
     missing=[k.replace('_',' ') for k,v in checks.items() if not v]
     evidence=f'Deep-link context retention score {score}/100. ' + ('Missing: '+', '.join(missing)+'.' if missing else 'Brand context, navigation, internal paths, and conversion path are present.')
     return {'status':status,'score':score,'checks':checks,'confidence':0.9,'severity':'medium','evidence':evidence}
+
+
+# Email detection (security phase 6). The original pattern r'[\w.+-]+@[\w.-]+\.[a-z]{2,}' was
+# quadratic on long runs of word characters: at every start position [\w.+-]+ consumed the rest of the run before
+# failing to find '@' (100,000 characters of page text took about 130 s, so a hostile page could stall the stage
+# until its timeout). find_emails returns exactly what re.findall returned with that pattern (verified on 300,000
+# curated and fuzzed inputs) in linear time: each '@' is visited once, the local part is scanned backwards only as
+# far as the previous match, and the original domain pattern is matched once, anchored after the '@'. The same
+# helper is defined in each standalone engine script, which share no module.
+_EMAIL_LOCAL_CHAR = re.compile(r'[\w.+-]')
+_EMAIL_DOMAIN = re.compile(r'[\w.-]+\.[a-z]{2,}', re.I)
+
+
+def find_emails(text):
+    r"""Return the email-like strings re.findall(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}', text, re.I) would return, in linear time."""
+    text = text or ""
+    found, pos = [], 0
+    at = text.find('@')
+    while at != -1:
+        start = at
+        while start > pos and _EMAIL_LOCAL_CHAR.match(text, start - 1):
+            start -= 1
+        match = _EMAIL_DOMAIN.match(text, at + 1) if start < at else None
+        if match:
+            found.append(text[start:match.end()])
+            pos = match.end()
+            at = text.find('@', pos)
+        else:
+            at = text.find('@', at + 1)
+    return found
 
 def analyze_engagement(raw_len, html_content, rendered_metrics=None, mobile_metrics=None):
     parser = EngagementHTMLParser()

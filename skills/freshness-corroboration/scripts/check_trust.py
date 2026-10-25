@@ -743,6 +743,36 @@ def analyze_trust_pages(page_urls, current_year=None, primary_external=None, max
     out["execution"]={"partial": bool(EXECUTION_ERRORS), "errors": list(EXECUTION_ERRORS)}
     return out
 
+
+# Email detection (security phase 6). The original pattern r'[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}' was
+# quadratic on long runs of word characters: at every start position [\w.+-]+ consumed the rest of the run before
+# failing to find '@' (100,000 characters of page text took about 130 s, so a hostile page could stall the stage
+# until its timeout). find_emails returns exactly what re.findall returned with that pattern (verified on 300,000
+# curated and fuzzed inputs) in linear time: each '@' is visited once, the local part is scanned backwards only as
+# far as the previous match, and the original domain pattern is matched once, anchored after the '@'. The same
+# helper is defined in each standalone engine script, which share no module.
+_EMAIL_LOCAL_CHAR = re.compile(r'[\w.+-]')
+_EMAIL_DOMAIN = re.compile(r'[\w.-]+\.[a-zA-Z]{2,}')
+
+
+def find_emails(text):
+    r"""Return the email-like strings re.findall(r'[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}', text) would return, in linear time."""
+    text = text or ""
+    found, pos = [], 0
+    at = text.find('@')
+    while at != -1:
+        start = at
+        while start > pos and _EMAIL_LOCAL_CHAR.match(text, start - 1):
+            start -= 1
+        match = _EMAIL_DOMAIN.match(text, at + 1) if start < at else None
+        if match:
+            found.append(text[start:match.end()])
+            pos = match.end()
+            at = text.find('@', pos)
+        else:
+            at = text.find('@', at + 1)
+    return found
+
 def analyze_trust(html_content, target_url, mock_data_path=None, current_year=None, http_last_modified=None, fetch_sitemap_fn=None, external_apis_fn=None):
     if current_year is None:
         current_year = datetime.now(timezone.utc).year
@@ -921,7 +951,7 @@ def analyze_trust(html_content, target_url, mock_data_path=None, current_year=No
     page_type = detect_page_type(target_url, full_text, parser.title, schemas=detected_schemas)
     
     has_author = parser.has_author_link or any(pattern in full_text.lower() for pattern in ["written by", "author:", "by: ", "published by"])
-    has_email = len(re.findall(r'[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}', full_text)) > 0
+    has_email = len(find_emails(full_text)) > 0
     has_phone = len(re.findall(r'\+?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', full_text)) > 0
     has_address = len(re.findall(r'\b\d{1,5}\s+[A-Za-z0-9#.\s]{3,30}\s+(?:street|st|avenue|ave|road|rd|highway|hwy|square|sq|trail|trl|drive|dr|court|ct|parkway|pkwy|suite|ste|box)\b', full_text, re.IGNORECASE)) > 0
     
