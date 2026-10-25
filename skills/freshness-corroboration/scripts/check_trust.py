@@ -366,6 +366,10 @@ def validate_sameas_links(same_as_links, brand_name):
         except Exception: suspicious.append(link)
     return valid,suspicious
 
+class CrossHostRedirectRefused(Exception):
+    """A page redirected to another host; the audit stays on the audited site (security phase 7, H2)."""
+
+
 def fetch_page_with_headers(url, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"):
     """Fetch a public HTTP(S) page and validate every redirect destination."""
     tracker = None
@@ -386,6 +390,14 @@ def fetch_page_with_headers(url, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 self.chain.append({'from':req.full_url,'to':newurl,'status':code})
                 _validate_public_http_url(newurl)
+                # Same-site rule of the technical stage (security phase 7, H2): each hop must stay on the previous
+                # hop's host, ignoring a leading "www.", so http->https and apex<->www are followed and any other
+                # host (CDN subdomains included) is not. It previously followed redirects to any public host.
+                src=urllib.parse.urlparse(req.full_url).netloc.lower().removeprefix('www.')
+                dst=urllib.parse.urlparse(newurl).netloc.lower().removeprefix('www.')
+                if src and dst and src != dst:
+                    fp.close()
+                    raise CrossHostRedirectRefused(f"redirected to another host (not followed): {newurl}")
                 return super().redirect_request(req, fp, code, msg, headers, newurl)
         tracker=SafeRedirectHandler()
         opener=urllib.request.build_opener(tracker)
@@ -720,7 +732,8 @@ def analyze_trust_pages(page_urls, current_year=None, primary_external=None, max
         except Exception as e:
             html,last_modified=f"Error: {_record_execution_error(f'Page fetch failed for {u}', e)}",None
         if not html or html.startswith("Error:"):
-            reports.append({"url":u,"status":"unavailable","multi_signal_freshness":{"status":"unavailable","evidence":"Page fetch failed."},"eeat_check":{"status":"unavailable","evidence":"Page fetch failed."}})
+            failed=f"Page fetch failed: {(html or 'no content').removeprefix('Error: ')}"
+            reports.append({"url":u,"status":"unavailable","multi_signal_freshness":{"status":"unavailable","evidence":failed},"eeat_check":{"status":"unavailable","evidence":failed}})
             continue
         ext_fn=None
         if i==0 and primary_external is not None:
@@ -1287,7 +1300,8 @@ if __name__ == "__main__":
         else:
             html,last_modified=fetch_page_with_headers(url)
             if not html or html.startswith("Error:"):
-                report={"robots_gate":{"status":"allowed","evidence":"robots.txt allowed the target URL."},"multi_signal_freshness":{"status":"unavailable","evidence":"Page fetch failed."},"eeat_check":{"status":"unavailable","evidence":"Page fetch failed."}}
+                failed=f"Page fetch failed: {(html or 'no content').removeprefix('Error: ')}"
+                report={"robots_gate":{"status":"allowed","evidence":"robots.txt allowed the target URL."},"multi_signal_freshness":{"status":"unavailable","evidence":failed},"eeat_check":{"status":"unavailable","evidence":failed}}
             else:
                 report=analyze_trust(html,url,current_year=args.current_year,http_last_modified=last_modified,mock_data_path=args.mock_data)
     output_data=json.dumps(report,indent=2)

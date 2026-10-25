@@ -65,6 +65,18 @@ Scope: the web platform (`backend/`, `frontend/`) and the audit engine it runs (
   cross-host redirect is recorded as an execution error; 404/410 is not an error. Tests:
   `TestSitemapFetchSafety` (10, real sockets), including a redirect to 10.0.0.1, 169.254.169.254, `[::1]`, `ftp:` and
   `file:`, and a check that no connection is attempted even when the DNS filter is disabled.
+- **Page fetches stay on the audited site** (security phase 7, H2, 2026-10-26). All three stages now apply one redirect
+  rule: each hop must stay on the previous hop's host, ignoring a leading `www.`. So http→https and apex↔www are
+  followed (each hop still validated first), while a redirect to any other host, CDN subdomains and other ports
+  included, is not. The technical stage (`fetch_url`) already worked this way; the trust and engagement page fetchers
+  followed redirects to any public host and analysed that host's page as the audited site, without its robots.txt.
+  They now raise `CrossHostRedirectRefused`, the page is reported as failed (`status: unavailable`, listed in
+  `execution.failed_pages`) with the evidence "redirected to another host (not followed): <url>", and it is never
+  counted as a pass. Loops and over-long chains end with urllib's limits (10 redirects) as a recorded failure.
+  Tests: `TestPageRedirectScope` (6, real sockets): same-host followed, cross-host refused (also after a same-host
+  hop) without contacting the other host, private/metadata/`ftp:` targets refused before connecting, loops and a
+  missing `Location`, the reason carried into the composed report, and the host-pair rule checked against the
+  technical stage's.
 - **Only same-site sitemaps are fetched** (security phase 6). robots.txt `Sitemap:` lines on another host, including a
   CDN subdomain of the audited site, are skipped and never requested; `www.<site>` counts as the same site, as for every
   crawl request. Skipped URLs are listed in the technical evidence, `scope.sitemaps_skipped_offsite`, the UI and the

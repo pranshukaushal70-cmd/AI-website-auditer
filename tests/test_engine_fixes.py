@@ -1423,6 +1423,187 @@ for label, payload in (("word-run", "x" * 2000000), ("prose", "word " * 400000),
             self.assertLess(float(seconds), 120.0, f"{stage} on {label} took {seconds}s")
 
 
+class TestPageRedirectScope(unittest.TestCase):
+    """Security phase 7, H2: the trust and engagement page fetchers follow only same-site redirects (the technical
+    stage's rule: each hop on the previous hop's host, ignoring "www."). A redirect to another host, CDN subdomains
+    included, is not followed and the page is reported as failed with the reason. Every hop is still validated."""
+
+    REASON = "redirected to another host (not followed)"
+
+    def setUp(self):
+        import contextlib
+        import io
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.requests = []
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                host = self.headers.get("Host", "")
+                test.requests.append((host, self.path))
+                port = test.port
+                routes = {
+                    "/same": ("302", "/landing"),
+                    "/cross": ("302", f"http://localhost:{port}/elsewhere"),
+                    "/same-then-cross": ("301", "/hop"),
+                    "/hop": ("302", f"http://localhost:{port}/elsewhere"),
+                    "/private": ("302", "http://10.0.0.1/admin"),
+                    "/metadata": ("307", "http://169.254.169.254/latest/meta-data/"),
+                    "/ftp": ("302", f"ftp://127.0.0.1:{port}/x"),
+                    "/loop": ("302", "/loop"),
+                    "/no-location": ("302", None),
+                }
+                kind, target = routes.get(self.path, ("200", None))
+                if self.path == "/robots.txt":
+                    kind = "404"
+                if kind in ("301", "302", "307"):
+                    self.send_response(int(kind))
+                    if target:
+                        self.send_header("Location", target)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                body = (f"<html><head><title>Page {self.path}</title></head><body><h1>Served by {host}{self.path}</h1>"
+                        "<p>Example Co makes forecasting software for retail teams.</p></body></html>").encode()
+                self.send_response(int(kind))
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self._saved = os.environ.get("BRAND_AUDIT_LOCAL_FIXTURE")
+        os.environ["BRAND_AUDIT_LOCAL_FIXTURE"] = str(self.port)
+        for module in (check_trust, check_engagement):
+            module._LOCAL_FIXTURE_WARNED = True
+            module.EXECUTION_ERRORS.clear()
+        self._quiet = contextlib.redirect_stderr(io.StringIO())
+        self._quiet.__enter__()
+
+    def tearDown(self):
+        self._quiet.__exit__(None, None, None)
+        self.server.shutdown()
+        self.server.server_close()
+        os.environ.pop("BRAND_AUDIT_LOCAL_FIXTURE", None)
+        if self._saved is not None:
+            os.environ["BRAND_AUDIT_LOCAL_FIXTURE"] = self._saved
+        for module in (check_trust, check_engagement):
+            module._LOCAL_FIXTURE_WARNED = False
+
+    def fetchers(self):
+        """(name, module, fetch returning (text, ok))"""
+        def trust(url):
+            html, _ = check_trust.fetch_page_with_headers(url)
+            return html, not html.startswith("Error:")
+
+        def engagement(url):
+            raw_len, html = check_engagement.fetch_page(url)
+            return html, bool(raw_len)
+        return (("trust", check_trust, trust), ("engagement", check_engagement, engagement))
+
+    def run_case(self, path):
+        for name, module, fetch in self.fetchers():
+            self.requests.clear()
+            module.EXECUTION_ERRORS.clear()
+            text, ok = fetch(self.base + path)
+            yield name, module, text, ok, list(self.requests)
+
+    def test_same_host_redirect_is_followed(self):
+        for name, _, text, ok, requests in self.run_case("/same"):
+            with self.subTest(stage=name):
+                self.assertTrue(ok, text)
+                self.assertIn(f"Served by 127.0.0.1:{self.port}/landing", text)
+                self.assertEqual([p for _, p in requests], ["/same", "/landing"])
+
+    def test_cross_host_redirect_is_not_followed_and_is_reported(self):
+        for case in ("/cross", "/same-then-cross"):
+            for name, module, text, ok, requests in self.run_case(case):
+                with self.subTest(stage=name, case=case):
+                    self.assertFalse(ok)
+                    self.assertNotIn("Served by", text)
+                    self.assertTrue(all(h.startswith("127.0.0.1:") for h, _ in requests), requests)  # localhost never contacted
+                    self.assertIn(self.REASON, text)
+                    self.assertIn(f"http://localhost:{self.port}/elsewhere", " ".join(module.EXECUTION_ERRORS))
+
+    def test_redirects_to_prohibited_destinations_are_refused_before_connecting(self):
+        for case in ("/private", "/metadata", "/ftp"):
+            for name, module, text, ok, requests in self.run_case(case):
+                with self.subTest(stage=name, case=case):
+                    self.assertFalse(ok)
+                    self.assertEqual([p for _, p in requests], [case])  # nothing requested after the redirect
+                    self.assertIn("Page fetch blocked/failed", " ".join(module.EXECUTION_ERRORS))
+
+    def test_redirect_loop_and_missing_location_fail_cleanly(self):
+        for case, max_requests in (("/loop", 11), ("/no-location", 1)):
+            for name, module, text, ok, requests in self.run_case(case):
+                with self.subTest(stage=name, case=case):
+                    self.assertFalse(ok)
+                    self.assertLessEqual(len(requests), max_requests)
+                    self.assertTrue(module.EXECUTION_ERRORS)
+
+    def test_failed_page_carries_the_reason_into_the_composed_report(self):
+        urls = [self.base + "/same", self.base + "/cross"]
+        trust = check_trust.analyze_trust_pages(urls, current_year=2026, primary_external=lambda _b: [])
+        engagement = check_engagement.analyze_engagement_pages(urls)
+        for name, report, key in (("trust", trust, "eeat_check"), ("engagement", engagement, "h1_audit")):
+            with self.subTest(stage=name):
+                pages = {r["url"]: r for r in report["page_reports"]}
+                self.assertNotEqual(pages[self.base + "/same"].get("status"), "unavailable")
+                failed = pages[self.base + "/cross"]
+                self.assertEqual(failed["status"], "unavailable")
+                self.assertIn(self.REASON, failed[key]["evidence"])
+        composed = compose(None, trust, engagement, site=self.base)
+        self.assertIn(self.base + "/cross", composed["execution"]["failed_pages"])
+        self.assertNotIn(self.base + "/same", composed["execution"]["failed_pages"])
+
+    def test_host_pair_rule_matches_the_technical_stage(self):
+        """Exercises each fetcher's redirect handler directly (hostnames that cannot be served locally). The per-hop
+        validator is stubbed here only; the real-socket tests above cover it."""
+        import io
+        import urllib.parse
+        import urllib.request
+        cases = [
+            ("http://example.com/", "https://example.com/", True),          # http -> https
+            ("https://example.com/", "https://www.example.com/", True),     # apex -> www
+            ("https://www.example.com/a", "https://example.com/b", True),   # www -> apex
+            ("https://EXAMPLE.com/", "https://www.example.COM/x", True),    # case-insensitive
+            ("https://example.com/", "https://cdn.example.com/", False),    # CDN subdomain
+            ("https://example.com/", "https://example.org/", False),        # other domain
+            ("https://example.com/", "https://example.com:8443/", False),   # other port (as fetch_url)
+            ("https://www.example.com/", "https://www2.example.com/", False),
+        ]
+        for name, module, _ in self.fetchers():
+            captured = []
+
+            def capture(*handlers):
+                captured.extend(handlers)
+                raise RuntimeError("stop after building the opener")
+            fetch = check_trust.fetch_page_with_headers if module is check_trust else check_engagement.fetch_page
+            with patch("urllib.request.build_opener", side_effect=capture):
+                fetch(self.base + "/")
+            handler = captured[0]
+            for src, dst, follow in cases:
+                with self.subTest(stage=name, src=src, dst=dst), patch.object(module, "_validate_public_http_url"):
+                    req = urllib.request.Request(src)
+                    if follow:
+                        self.assertIsNotNone(handler.redirect_request(req, io.BytesIO(), 301, "Moved", {}, dst))
+                    else:
+                        with self.assertRaises(module.CrossHostRedirectRefused) as raised:
+                            handler.redirect_request(req, io.BytesIO(), 301, "Moved", {}, dst)
+                        self.assertIn(self.REASON, str(raised.exception))
+
+        def technical_rule(src, dst):  # fetch_url's TrackingRedirectHandler comparison
+            return urllib.parse.urlparse(src).netloc.lower().removeprefix("www.") == urllib.parse.urlparse(dst).netloc.lower().removeprefix("www.")
+        self.assertEqual([technical_rule(s, d) for s, d, _ in cases], [f for _, _, f in cases])
+
+
 class TestVerifierLoopbackBinding(unittest.TestCase):
     """Security phase 5: the original verifier's mock site listens on loopback only (it used all interfaces)."""
 

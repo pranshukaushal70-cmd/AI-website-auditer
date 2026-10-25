@@ -724,3 +724,42 @@ installed here. Fix (tests only, no product code):
 | `verify_marketplace.py`; `evaluation/test_evaluation.py`; `run_evaluation.py --check` | exit 0; 10 passed; reproducible (`PYTHONHASHSEED` 0, 42) |
 | `ruff check backend evaluation`; frontend typecheck / `vitest` / build | clean; clean / 30 passed / exit 0 |
 | Evaluation result files | all 20 byte-identical to `556b473` |
+
+## Session 16 — 2026-10-26 (security phase 7, step H2: same-site redirect policy for page fetches; approved)
+
+Built on `738965f`. Engine working copies changed as approved (the original ZIP is untouched); no evaluation dataset or
+result, `.env`, secret or database was changed.
+
+### Problem (reproduced in the phase 7 audit)
+The trust (`fetch_page_with_headers`) and engagement (`fetch_page`) page fetchers validated every redirect hop but
+followed redirects to **any** public host. A real-socket probe showed both fetching `localhost` content after a
+redirect from `127.0.0.1` and analysing it as the audited site, without that host's robots.txt. The technical stage
+(`fetch_url`) already refused cross-host redirects, so the stages disagreed.
+
+### Change (policy as approved)
+- Both redirect handlers use the technical stage's rule: a hop is followed only if its host equals the previous hop's,
+  ignoring a leading `www.` (so http→https and apex↔www are followed; CDN subdomains, other domains and other ports are
+  not). Every hop is still validated by `_validate_public_http_url` first.
+- A refused redirect raises `CrossHostRedirectRefused("redirected to another host (not followed): <url>")` (the 3xx
+  response is closed). The existing error path records it in `execution.errors`, the page is `unavailable` and listed
+  in `execution.failed_pages`. The trust stage's page evidence now includes the failure reason (it said only "Page
+  fetch failed."); the engagement stage already did.
+- Redirect loops and long chains are left to urllib's limits and end as a recorded failure.
+
+### Tests
+`tests/test_engine_fixes.py::TestPageRedirectScope` (6, real sockets plus direct handler calls). Against the previous
+fetchers 15 subtests fail or error: every cross-host case (the old code followed the redirect), the report-reason case,
+and the host-pair cases. The same-host, prohibited-target and loop cases pass on both, as expected (that behaviour is
+unchanged).
+
+### Verification
+| Check | Result |
+|---|---|
+| `TestPageRedirectScope` | 6 passed |
+| Engine `test_all_rubric_cases` / `test_round3_polish` / `test_engine_fixes` | 48 / 20 / 103 passed |
+| `tests/repro_d15_redirect_chain.py`; `verify_marketplace.py` | exit 0; exit 0 |
+| `evaluation/test_evaluation.py`; `run_evaluation.py --check` | 10 passed; reproducible (`PYTHONHASHSEED` 0, 42; micro F1 0.92) |
+| Evaluation result files | all 20 byte-identical to `738965f` (no labelled fixture involves a cross-host redirect) |
+| Backend `pytest` (full), two runs | 259 passed, 1 skipped (the Windows file-symlink case) |
+| `ruff check backend evaluation`; engine pyflakes counts | clean; unchanged from `738965f` |
+| Frontend typecheck / `vitest` / build | clean / 30 passed / exit 0 |
