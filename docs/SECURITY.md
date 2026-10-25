@@ -132,6 +132,18 @@ with `X-Request-ID` and the security headers.
 - The UI renders crawled text as text (React escaping, no `dangerouslySetInnerHTML`), and links only `http:`/`https:`
   URLs with `rel="noopener noreferrer nofollow"`.
 - SQL uses bound parameters; column names in dynamic UPDATEs come from a fixed allow-list.
+- **Built-UI file route** (`main.py::ui_file`; security phase 7, H1, 2026-10-26). The fallback route that serves
+  `frontend/dist` used to resolve and stat `dist / <request path>` before checking containment. On Windows a request
+  such as `/%5C%5Chost%5Cshare%5Cx` or `/%2F%2Fhost/share/x` became the UNC path `\\host\share\x`, so the server's
+  filesystem calls would make Windows try to reach that host over SMB (an NTLM-hash leak). Because it is a plain GET
+  with a valid loopback `Host`, any web page could trigger it with an `<img>`. Now the path is checked as a string
+  first: every segment must match `[A-Za-z0-9_-]`, with `.` allowed except at the start or end, and Windows device
+  names, paths over 1024 characters, empty segments, `..`, backslashes, `:` and NUL are refused with 404 before any
+  filesystem call. An allowed path is joined under `dist`, resolved, and its containment re-checked (a symlink leading
+  out of `dist` is refused). Missing files and client-side routes still load `index.html`; `/api/*` is unchanged.
+  Tests: `backend/tests/test_ui_files.py` (46: traversal, absolute, UNC, Windows-style and encoded paths, device names,
+  NUL, hidden files, a filesystem-call interception proving UNC paths never reach `pathlib`, symlink escape, valid
+  assets, missing assets, fallback, API routes). 35 of them fail against the previous route.
 
 ### Data handling
 - Stored: audit metadata, the composed report (findings and evidence snippets), and prioritisation. Not stored: raw
@@ -168,6 +180,11 @@ with `X-Request-ID` and the security headers.
   fixed. The remaining patterns are not formally proven linear; a new pattern over page text should be checked the
   same way (`TestPageTextScansStayLinear` runs every stage on hostile pages).
 - Sitemaps hosted on another host (for example a CDN) are not fetched, by decision; see the sitemap bullet above.
+- Cross-site GET requests from other web pages still reach the local server (the guard checks `Origin` only for
+  state-changing methods). The built-UI route no longer lets them touch other hosts (phase 7, H1), but a
+  `Sec-Fetch-Site` check that refuses cross-site sub-resource requests is a possible further hardening (not
+  implemented). The symlink-escape test is skipped on Windows when the account cannot create symlinks; it runs on CI
+  (Linux).
 - Retention is off by default (by decision). An operator who wants deletion must set `BRAND_PLATFORM_RETENTION_DAYS`.
 - The original verifier's mock server now binds `127.0.0.1` (O8, resolved in phase 5). It still uses a fixed port,
   8999, and its `localhost` target pays a measured ~2 s per connection on this machine because `localhost` resolves to

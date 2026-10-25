@@ -75,6 +75,38 @@ def _error(status: int, code: str, message: str, details=None) -> JSONResponse:
     return JSONResponse(status_code=status, content=body)
 
 
+# Built-UI path segments: letters, digits, '_' and '-', with '.' allowed except first or last. This excludes '..',
+# empty segments ('//'), backslashes, ':' (drive letters, NTFS streams), NUL and every other separator or encoding.
+_UI_SEGMENT = re.compile(r"[A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?")
+_WINDOWS_DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range(10)), *(f"lpt{i}" for i in range(10))})
+
+
+def ui_file(dist: Path, path: str) -> tuple[str, Path | None]:
+    """Map a request path to a file of the built UI: ("file", path), ("fallback", None) for index.html, or
+    ("reject", None) for a 404.
+
+    Security phase 7 (H1): the path is checked as a string before any filesystem call. The previous code resolved
+    `dist / path` first, and on Windows a path such as `\\\\host\\share\\x` (sent as /%5C%5Chost%5Cshare%5Cx or
+    /%2F%2Fhost/share/x) is a UNC path, and resolving and stat-ing it makes Windows try to reach that host over SMB
+    (which can leak the user's NTLM hash). Any web page could trigger that with an <img> pointing at the local server. Only a path made of allow-listed
+    segments is joined under dist; it is resolved and its containment re-checked, which also refuses a symlink that
+    leads out of dist."""
+    if not path:
+        return "fallback", None
+    segments = path.split("/")
+    if len(path) > 1024 or not all(
+        _UI_SEGMENT.fullmatch(s) and s.split(".", 1)[0].lower() not in _WINDOWS_DEVICE_NAMES for s in segments
+    ):
+        return "reject", None
+    try:
+        resolved = dist.joinpath(*segments).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return "fallback", None  # missing: client-side routes such as /audits/<id> load the UI
+    if not resolved.is_relative_to(dist):
+        return "reject", None
+    return ("file", resolved) if resolved.is_file() else ("fallback", None)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     foreign = [o for o in settings.cors_origins if not is_loopback_origin(o)]
@@ -280,10 +312,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def spa(path: str):
             if path.startswith("api/"):
                 raise HTTPException(404, "Not found")
-            candidate = (dist / path).resolve()
-            if path and candidate.is_file() and Path(candidate).is_relative_to(dist):
-                return FileResponse(candidate)
-            return FileResponse(dist / "index.html")
+            kind, file = ui_file(dist, path)
+            if kind == "reject":
+                raise HTTPException(404, "Not found")
+            return FileResponse(file if kind == "file" else dist / "index.html")
 
     return app
 
