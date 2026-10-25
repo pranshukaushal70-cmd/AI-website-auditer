@@ -564,3 +564,89 @@ typecheck clean, 25 tests passed, build exit 0. All 18 result files from the bas
 Note: the session scratchpad (outside the repository) was removed externally between runs, including earlier build
 backups, screenshots and a saved checksum list. Nothing in the repository was affected; Git now holds the reference
 copies.
+
+## Session 13 — 2026-10-25/26 (security phase 6: security and production-readiness audit; approved step by step)
+
+Built on `3c64bbe` (`origin/main` at the start). The original submitted ZIP was not touched. No `.env` file, secret,
+credential or real database was read or changed, and no existing SSRF, DNS, redirect, size or robots.txt protection was
+weakened. Engine scripts (original submission working copies) were changed only to correct the security and reliability
+issues below, as approved. One commit per logical change; all were verified before committing.
+
+### Commits
+| Commit | Change |
+|---|---|
+| `37832fc` | Step 1: the trust stage's `sitemap.xml` lastmod fetch moved from a bare `urlopen` (redirects followed to any host and scheme) to `_fetch_validated_text`, extracted from the robots.txt fetcher: validated start URL and every hop, same host only, DNS filtered at connect time, 64 KiB, 3 s. |
+| `6d7cd5c` | Step 2: robots.txt `Sitemap:` lines on another host (CDN subdomains included) are skipped, never fetched, and reported. |
+| `469c81e` | Reliability: bounded retry for progress-file writes; a final progress update that cannot be written fails the audit (exit 3). |
+| `66be993` | Linear email detection (`find_emails`) in all three stages. |
+| `371cc45` | Linear FAQ question scan (`QUESTION_SENTENCE`) in the technical stage, plus an end-to-end hostile-page test. |
+| `b3efd43` | Step 3a: pages truncated at the 2 MB cap are recorded (informational). |
+| `daf5076` | Step 3b: truncated pages and skipped off-site sitemaps are shown in the UI and PDF. |
+| `25ecca9` | Step 4: local-only / no-authentication warning in the launcher and the UI footer. |
+| `2568893` | Step 5: GitHub Actions moved to their Node 24 releases (`checkout@v5`, `setup-python@v6`, `setup-node@v5`). |
+| (this commit) | Documentation. |
+
+### Approved changes to existing tests
+- Option A: the two D8 sitemap tests patch `urllib.request.OpenerDirector.open` instead of `urllib.request.urlopen`
+  (assertions unchanged). They and the phase-3 test `test_missing_robots_txt_is_allowed_without_error` now use an
+  offline DNS stub for `example.com`: URL validation resolves DNS before connecting, and the robots test had made a
+  real DNS lookup since phase 3.
+
+### Problems found during the phase, and how each was handled
+1. **Committed before reading a result (process error).** `6d7cd5c` was committed in the same command that printed the
+   backend result, which was 1 failed, 208 passed. It was local only. Work stopped, and the failure was investigated
+   and reported. The commit was kept unchanged as approved; it was not the cause.
+2. **Silent progress loss (pre-existing, Windows).** `test_end_to_end_audit_persist_export_and_compare` failed
+   intermittently because `Progress.update` swallowed every `OSError`, and on Windows the atomic replace fails while
+   the API reads the file. Measured with a reader polling continuously: 2049 of 3000 updates lost silently. After the
+   fix (7 attempts, about 0.6 s of backoff): 0 of 1000 lost silently (77 exhausted and reported) under the same
+   worst case, and 0 exhausted with a 0.05 s poll. Verified with the e2e test 10/10 and the full backend suite 3/3 runs
+   while the engine suites ran in parallel.
+3. **Quadratic regexes over page text (pre-existing since the original submission; denial of service).** The new
+   2.5 MB truncation test hung. The email regex `[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}` (same shape in all three stages)
+   took 14.6 s / 48.2 s / 133 s on 25k / 50k / 100k characters of `x`. Profiling every stage on six hostile 2 MB
+   shapes after fixing it exposed a second one, the FAQ regex `([^.!?]+\?)`, which still took over 30 s on four shapes,
+   including 2 MB of plain words. The FAQ fix was outside the approval (email only) but required by the approved
+   requirement that all stages handle 2 MB hostile input; it was committed separately so it can be reviewed on its
+   own.
+   - `find_emails` emulates `re.findall` exactly in linear time; `QUESTION_SENTENCE` adds `(?<![^.!?])`, which skips
+     no match the original found because a match always starts at the start of a run.
+   - **Behaviour differences: none.** 0 differences over 300,183 inputs for the email scanner (three variants, with
+     each stage's flags; valid, invalid, quoted and unusual local parts, IP-literal domains, Unicode including
+     case-folding edge characters such as U+212A and U+0130, multiple and adjacent addresses, long and adversarial
+     strings; both the `findall` and boolean call styles) and over 30,013 inputs for the FAQ scan. An earlier candidate
+     pattern with length limits (`{1,64}` local part) was faster but differed on 31 of 20,004 fuzzed inputs, so it was
+     not used.
+   - Timing: on hostile 2 MB inputs each stage took 0.3–5.3 s in most runs, and at most 13.1 s in one run while the
+     machine was loaded. That payload, re-measured, scaled linearly (1.6 s technical, 2.4 s trust at 2 MB, wall ≈ CPU).
+     The commit message of `371cc45` gives "0.3-5.3 s" and omits the 13.1 s reading; this entry is the correct record.
+   - Wall-clock assertions were unreliable on this machine (a dual-core i5-7200U at 33–53 % background CPU). A 15 s
+     limit failed twice with 21–25 s readings, during runs in which the whole process was several times slower; wall
+     time equalled CPU time when re-measured. The linearity tests therefore count the scanner's pattern calls
+     (deterministic) and keep only a 120 s hang guard, against hours for the original regex at 2 MB.
+   - Each fix was tested in an isolated `git worktree` at the exact commit state before committing (engine suites,
+     evaluation, verifier, backend), and the committed tree was confirmed identical to the tested tree. The worktree was
+     removed afterwards.
+4. **A test-tooling slip, caught.** The first version of the email helper had `\w` in a non-raw docstring, which Python
+   reports as a `SyntaxWarning`; patches were then applied with warnings treated as errors, and the helper's docstring
+   is raw.
+
+### Remaining limitations (documented in `docs/SECURITY.md`)
+- Sitemaps hosted on another host (for example a CDN) are not used, by decision.
+- Page-text regexes were profiled on six hostile shapes, not formally proven linear.
+- The build itself still uses Node 20 and Python 3.12 (unchanged by decision; only the action runtimes moved to Node 24).
+- No authentication; local-only use only (unchanged; now stated at startup and in the UI).
+
+### Verification (final, on `2568893` before the documentation commit)
+| Check | Result |
+|---|---|
+| Engine `test_all_rubric_cases` / `test_round3_polish` / `test_engine_fixes` | 48 / 20 / 97 passed |
+| `tests/repro_d15_redirect_chain.py` | exit 0 |
+| `verify_marketplace.py` (from a scratch directory) | exit 0 |
+| `evaluation/test_evaluation.py` / `run_evaluation.py --check` | 10 passed / reproducible (`PYTHONHASHSEED` 0, 42; micro F1 0.92) |
+| Backend `pytest` (full) | 213 passed, two runs (209 before the phase + 4) |
+| `ruff check backend evaluation` | clean; no new pyflakes findings in the engine scripts (counts equal to `3c64bbe`) |
+| Frontend typecheck / `vitest` / build | clean / 30 passed / exit 0 |
+| Browser check (Chromium, built app) | footer note visible at 390 px and 1280 px, no horizontal scroll |
+| Evaluation result files | all 20 byte-identical (SHA-256: `3c64bbe` = `HEAD` = working tree); no evaluation file changed |
+| Secret scan of `3c64bbe..HEAD`; tracked `.env`, database, ZIP, key or scratch files | none |

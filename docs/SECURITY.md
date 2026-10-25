@@ -30,7 +30,18 @@ Scope: the web platform (`backend/`, `frontend/`) and the audit engine it runs (
 - `_guarded_dns()` filters `getaddrinfo` answers at connect time, which narrows the DNS-rebinding window between
   validation and connection.
 - Responses are read up to 2 MB; 10 s socket timeouts; at least 0.5 s between requests to a host, or longer if
-  robots.txt declares a `Crawl-delay`.
+  robots.txt declares a `Crawl-delay`. Since security phase 6 a page cut off at 2 MB is recorded
+  (`crawl_scope.truncated_urls`, `execution.truncated_pages`) and shown in the UI and PDF as an informational note; it
+  does not make the audit partial or change any score.
+- **Page text is scanned in linear time** (security phase 6, 2026-10-26). The email regex used by all three stages
+  (`[\w.+-]+@…`) and the technical stage's FAQ question regex (`[^.!?]+\?`) were quadratic on long runs without the
+  character they look for: 100,000 characters took about 130 s, so a hostile or merely large page could stall a stage
+  until its 60 s timeout and leave the audit partial. They were replaced by `find_emails()` (a linear scanner, defined
+  identically in each standalone script) and `QUESTION_SENTENCE` (the same regex with the lookbehind `(?<![^.!?])`).
+  Both return exactly what the original regexes returned (0 differences over 300,183 and 30,013 curated and fuzzed
+  inputs). On hostile 2 MB inputs every stage now finished in 0.3–5.3 s in most runs on the development laptop (a dual-core
+  laptop CPU with other applications running), and in at most 13.1 s in one run while the machine was loaded; re-measured,
+  that payload scaled linearly (2.4 s at 2 MB). Each stage's own timeout is 60 s.
 - robots.txt is checked before every page fetch. **D13** (the trust stage ignored disallow rules) was fixed in session 1
   and is covered by `tests/test_engine_fixes.py::TestTrustRobotsGate` and the backend end-to-end test
   `test_robots_disallowed_site_is_partial_not_clean`, which asserts that only `/robots.txt` was requested.
@@ -48,6 +59,19 @@ Scope: the web platform (`backend/`, `frontend/`) and the audit engine it runs (
 - The trust and engagement stages fetch robots.txt through a redirect-validating opener: every hop is checked with
   `_validate_public_http_url`, cross-host hops are not followed, DNS answers are filtered at connect time, the body is
   capped at 64 KiB, and the timeout is 5 s. The technical stage uses `fetch_url`, which already worked this way.
+- **The trust stage's `sitemap.xml` lastmod check** (security phase 6) uses the same fetcher (`_fetch_validated_text`),
+  with a 64 KiB cap and a 3 s timeout. It previously used a bare `urlopen` that followed redirects to any host and
+  scheme, with only the connect-time DNS filter as protection. The starting URL is now validated too, and a refused or
+  cross-host redirect is recorded as an execution error; 404/410 is not an error. Tests:
+  `TestSitemapFetchSafety` (10, real sockets), including a redirect to 10.0.0.1, 169.254.169.254, `[::1]`, `ftp:` and
+  `file:`, and a check that no connection is attempted even when the DNS filter is disabled.
+- **Only same-site sitemaps are fetched** (security phase 6). robots.txt `Sitemap:` lines on another host, including a
+  CDN subdomain of the audited site, are skipped and never requested; `www.<site>` counts as the same site, as for every
+  crawl request. Skipped URLs are listed in the technical evidence, `scope.sitemaps_skipped_offsite`, the UI and the
+  PDF. **Limitation:** a site whose only sitemap is on a CDN host is reported as having no sitemap found on the site,
+  and its sitemap URLs and lastmod dates are not used. Sitemap-index children were already restricted to the site.
+  Malicious XML is handled by the bundled expat (2.6.0 here), which refuses entity-expansion ("billion laughs")
+  documents; `TestOffsiteSitemaps` covers both.
 - The engagement multi-page path checks robots.txt for every page, as the trust stage does. Pages passed with `--pages`
   were previously fetched without a per-page robots.txt check (the platform passes only `--technical`, whose URLs were
   already filtered).
@@ -63,6 +87,9 @@ Scope: the web platform (`backend/`, `frontend/`) and the audit engine it runs (
   variables, proxy and CA settings, and the engine switches. API keys and passwords in the server environment are not
   inherited (tested).
 - Hard kill of the whole process tree at runtime limit + grace; cancellation kills the tree too (both tested).
+- Progress-file integrity (phase 6): the engine retries a failed progress write up to 7 times (about 0.6 s; on Windows
+  the replace fails while the API is reading the file). An exhausted retry is printed as an error, and if the final
+  update cannot be written the engine exits 3 and the audit is stored as **failed**, never as completed.
 - `BRAND_PLATFORM_MAX_CONCURRENT_JOBS` (default 2), queue cap (default 10), one active audit per host, and a creation
   rate limit per client address (default 12 per 10 minutes, in memory, single node).
 
@@ -84,9 +111,14 @@ with `X-Request-ID` and the security headers.
 - `python -m brand_platform` binds 127.0.0.1 by default, exits with code 2 for any non-loopback `--host`, and runs uvicorn
   with `proxy_headers=False` (so `X-Forwarded-For` cannot change the address the rate limiter sees) and no `Server`
   header.
+- Since security phase 6, `python -m brand_platform` prints a warning before serving: local-only (loopback binding,
+  requests from other computers refused), no authentication (any user or program on this computer can start audits and
+  read every stored audit), and do not expose it through a reverse proxy, tunnel or port forwarding. The UI footer
+  states the same. Tests: `test_exposure.py` (banner before serving, none when the launcher refuses) and the frontend
+  footer test.
 - Fixed in the same phase: the request-logging middleware read `request.url`, which parses the Host header, so a malformed
   Host such as `[::1` caused a 500. It now reads the raw ASGI path.
-- Tests: `backend/tests/test_exposure.py` (51). The test suite's client presents a genuine loopback identity through a
+- Tests: `backend/tests/test_exposure.py` (53). The test suite's client presents a genuine loopback identity through a
   test-only ASGI shim (`tests/conftest.py::LoopbackPeer`); production code contains no test bypass.
 
 ### API and browser
@@ -132,6 +164,10 @@ with `X-Request-ID` and the security headers.
 - The rate limiter is in memory and keyed on the client IP, which is always a loopback address now. It still throttles
   runaway local clients, but it resets on restart and cannot tell local users apart.
 - `_guarded_dns()` monkey-patches `socket.getaddrinfo` process-wide. That is safe only because each audit runs in its own process.
+- Page-text regexes were profiled on six hostile 2 MB input shapes (security phase 6) and the two quadratic ones were
+  fixed. The remaining patterns are not formally proven linear; a new pattern over page text should be checked the
+  same way (`TestPageTextScansStayLinear` runs every stage on hostile pages).
+- Sitemaps hosted on another host (for example a CDN) are not fetched, by decision; see the sitemap bullet above.
 - Retention is off by default (by decision). An operator who wants deletion must set `BRAND_PLATFORM_RETENTION_DAYS`.
 - The original verifier's mock server now binds `127.0.0.1` (O8, resolved in phase 5). It still uses a fixed port,
   8999, and its `localhost` target pays a measured ~2 s per connection on this machine because `localhost` resolves to
