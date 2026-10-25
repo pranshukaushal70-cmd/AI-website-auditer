@@ -1269,6 +1269,68 @@ class TestEmailDetectionIsLinear(unittest.TestCase):
                 self.assertLess(time.monotonic() - started, 120.0, (label, name))
 
 
+class TestPageTextScansStayLinear(unittest.TestCase):
+    r"""Security phase 6: the FAQ question regex r'([^.!?]+\?)' was quadratic on long runs without . ! or ? (2 MB of
+    plain prose stalled the technical stage). QUESTION_SENTENCE must find exactly the same questions, quickly; and no
+    stage may hang on a 2 MB hostile page."""
+
+    def test_question_sentence_matches_the_original_regex_exactly(self):
+        import random
+        original = re.compile(r'([^.!?]+\?)')
+        rnd = random.Random(1025)
+        alphabet = list("abc xyz ABC 019?.!,;:\n\t\"'()-") + list("éü用户¿¡？。")
+        weights = [6 if c.isalnum() or c == " " else 3 if c in "?.!" else 1 for c in alphabet]
+        cases = ["", "?", "??", "a?", "What is it?", "Hi. How are you? Fine! Why? ...?", "a?b?c", "no question here.",
+                 "x" * 5000 + "?", "x" * 5000, "¿Qué? 用户？", "line one\nwhat now?", ". ? ! ?"]
+        cases += ["".join(rnd.choices(alphabet, weights, k=rnd.randint(1, rnd.choice((20, 100, 500))))) for _ in range(30000)]
+        for text in cases:
+            self.assertEqual(check_technical.QUESTION_SENTENCE.findall(text), original.findall(text), text[:80])
+
+    def test_question_sentence_only_starts_matches_at_run_starts(self):
+        """Why it is linear, checked structurally: the lookbehind lets a match begin only after . ! ? or at the
+        start, so each run is scanned once. Wall-clock is a hang guard only (the original needs hours at 2 MB)."""
+        self.assertTrue(check_technical.QUESTION_SENTENCE.pattern.startswith("(?<![^.!?])"))
+        for text in ("x" * (2 * 1024 * 1024), "word " * 400_000, ("a" * 1000 + "?") * 2000):
+            started = time.monotonic()
+            found = check_technical.QUESTION_SENTENCE.findall(text)
+            self.assertLess(time.monotonic() - started, 120.0)
+            self.assertEqual(len(found), text.count("?"))
+
+    def test_each_stage_analyses_a_two_megabyte_hostile_page_without_hanging(self):
+        """End to end, in a child process with a hard timeout so a regression fails instead of hanging the suite."""
+        script = r'''
+import os, sys, time
+root = sys.argv[1]
+for sub in ("crawl-render-audit", "engagement-audit", "freshness-corroboration"):
+    sys.path.insert(0, os.path.join(root, "skills", sub, "scripts"))
+os.environ["BRAND_AUDIT_DISABLE_RENDER"] = "1"
+os.environ["BRAND_AUDIT_EXTERNAL_CORROBORATION"] = "off"
+import check_technical, check_trust, check_engagement
+url = "https://example.com/"
+for label, payload in (("word-run", "x" * 2000000), ("prose", "word " * 400000), ("at-runs", ("a@" + "b" * 1000) * 1990)):
+    html = "<html><head><title>Hostile</title></head><body><h1>Hostile</h1><p>" + payload + "</p></body></html>"
+    for stage in ("technical", "trust", "engagement"):
+        started = time.monotonic()
+        if stage == "technical":
+            check_technical.analyze_technical(url, max_crawl_pages=1, fetch_fn=lambda u, **k: (
+                (200, html, {"_final_url": u, "_redirect_chain": []}) if u == url else (404, "", {"_final_url": u, "_redirect_chain": []})))
+        elif stage == "trust":
+            check_trust.analyze_trust(html, url, current_year=2026, fetch_sitemap_fn=lambda base: None,
+                                      external_apis_fn=lambda *a, **k: None)
+        else:
+            check_engagement.analyze_engagement(len(html), html)
+        print(f"{label} {stage} {time.monotonic() - started:.2f}", flush=True)
+'''
+        result = subprocess.run([sys.executable, "-c", script, str(ROOT)], capture_output=True, text=True, timeout=900)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        timings = [line.split() for line in result.stdout.splitlines()]
+        self.assertEqual(len(timings), 9, result.stdout)
+        for label, stage, seconds in timings:
+            # Hang guard: before the fix, technical exceeded 30 s on three of these payloads (and needs hours at
+            # 2 MB); after it, each stage measured 0.8-3.2 s here. Loaded CI machines can be many times slower.
+            self.assertLess(float(seconds), 120.0, f"{stage} on {label} took {seconds}s")
+
+
 class TestVerifierLoopbackBinding(unittest.TestCase):
     """Security phase 5: the original verifier's mock site listens on loopback only (it used all interfaces)."""
 

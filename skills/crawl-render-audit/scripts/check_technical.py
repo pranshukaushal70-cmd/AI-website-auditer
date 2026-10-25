@@ -959,6 +959,9 @@ def find_emails(text):
             at = text.find('@', at + 1)
     return found
 
+# Question-like sentences for the FAQ parity check; see the comment where it is used (security phase 6).
+QUESTION_SENTENCE = re.compile(r'(?<![^.!?])([^.!?]+\?)')
+
 def _extract_machine_facts(text):
     text=text or ""
     prices=set(re.findall(r'(?:[$€£₹]|USD|EUR|GBP|INR)\s*\d+(?:[,.]\d{1,2})?', text, re.I))
@@ -1592,7 +1595,10 @@ def analyze_technical(url, max_crawl_pages=6, fetch_fn=None):
     question_candidates = []
     for parser in all_parsers:
         for text in parser.texts:
-            for q in re.findall(r'([^.!?]+\?)', text):
+            # Security phase 6: r'([^.!?]+\?)' alone was quadratic on long runs without . ! or ? (2 MB of plain
+            # prose stalled the stage). A match can only begin at the start of such a run (the previous match ends
+            # with '?'), so the lookbehind skips nothing the original found and makes the scan linear.
+            for q in QUESTION_SENTENCE.findall(text):
                 q_clean = q.strip()
                 if len(q_clean.split()) > 3 and any(w in q_clean.lower() for w in ["what", "how", "why", "who", "where", "when", "can", "is", "are", "do", "does", "should"]):
                     question_candidates.append(q_clean)
