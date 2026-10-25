@@ -1109,6 +1109,98 @@ class TestOffsiteSitemaps(unittest.TestCase):
         self.assertGreaterEqual(tuple(int(x) for x in pyexpat.EXPAT_VERSION.split("_")[1].split(".")), (2, 4, 1))
 
 
+class TestTruncatedPagesAreReported(unittest.TestCase):
+    """Security phase 6, step 3: a response over the 2 MB cap is still read only up to the cap, and the truncation
+    is now recorded (it was silent). Informational: it does not make the audit partial."""
+
+    BIG = 2_500_000
+
+    def setUp(self):
+        import contextlib
+        import io
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        big = ("<html><head><title>Big Co</title></head><body><h1>Big Co</h1><p>"
+               + "x" * self.BIG + "</p><p>TAIL-MARKER</p></body></html>").encode()
+        small = b"<html><head><title>Small</title></head><body><h1>Small</h1></body></html>"
+        self.sent = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = big if self.path == "/" else small if self.path == "/small" else b""
+                self.send_response(200 if body else 404)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except OSError:
+                    pass  # the client stopped reading at its cap
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = self.server.server_address[1]
+        self.base = f"http://127.0.0.1:{port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self._saved = {k: os.environ.get(k) for k in ("BRAND_AUDIT_LOCAL_FIXTURE", "BRAND_AUDIT_DISABLE_RENDER")}
+        os.environ["BRAND_AUDIT_LOCAL_FIXTURE"] = str(port)
+        os.environ["BRAND_AUDIT_DISABLE_RENDER"] = "1"
+        for module in (check_technical, check_trust, check_engagement):
+            module.TRUNCATED_URLS.clear()
+            if hasattr(module, "_LOCAL_FIXTURE_WARNED"):
+                module._LOCAL_FIXTURE_WARNED = True
+        self._quiet = contextlib.redirect_stderr(io.StringIO())
+        self._quiet.__enter__()
+
+    def tearDown(self):
+        self._quiet.__exit__(None, None, None)
+        self.server.shutdown()
+        self.server.server_close()
+        for k, v in self._saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+    def test_each_fetcher_caps_at_2_mb_and_records_the_truncation(self):
+        cap = 2 * 1024 * 1024
+        _, text, _ = check_technical.fetch_url(self.base + "/")
+        self.assertEqual(len(text.encode()), cap)
+        self.assertNotIn("TAIL-MARKER", text)
+        html, _ = check_trust.fetch_page_with_headers(self.base + "/")
+        self.assertEqual(len(html.encode()), cap)
+        raw_len, html = check_engagement.fetch_page(self.base + "/")
+        self.assertEqual(raw_len, cap)
+        for module in (check_technical, check_trust, check_engagement):
+            self.assertEqual(module.TRUNCATED_URLS, [self.base + "/"], module.__name__)
+
+    def test_small_pages_are_not_reported(self):
+        check_technical.fetch_url(self.base + "/small")
+        check_trust.fetch_page_with_headers(self.base + "/small")
+        check_engagement.fetch_page(self.base + "/small")
+        for module in (check_technical, check_trust, check_engagement):
+            self.assertEqual(module.TRUNCATED_URLS, [], module.__name__)
+
+    def test_technical_audit_reports_truncation_without_marking_it_partial(self):
+        tech = check_technical.analyze_technical(self.base + "/", max_crawl_pages=1)
+        self.assertEqual(tech["crawl_scope"]["truncated_urls"], [self.base + "/"])
+        self.assertEqual(tech["execution"]["truncated_pages"], [self.base + "/"])
+        report = compose(tech, None, None, site=self.base)
+        self.assertEqual(report["execution"]["truncated_pages"], [self.base + "/"])
+        self.assertFalse(any("truncat" in e.lower() for e in report["execution"]["errors"]))
+
+    def test_composer_merges_truncation_from_all_stages_and_stays_informational(self):
+        tech = {"execution": {"partial": False, "errors": [], "truncated_pages": ["https://example.com/"]}}
+        trust = {"execution": {"partial": False, "errors": [], "truncated_pages": ["https://example.com/", "https://example.com/a"]}}
+        clean = compose({"execution": {"partial": False, "errors": []}}, {"execution": {"partial": False, "errors": []}}, None)
+        report = compose(tech, trust, None)
+        self.assertEqual(report["execution"]["truncated_pages"], ["https://example.com/", "https://example.com/a"])
+        self.assertEqual(report["execution"]["partial"], clean["execution"]["partial"])
+        self.assertEqual(report["readiness"], clean["readiness"])
+        self.assertEqual(clean["execution"]["truncated_pages"], [])
+
+
 class TestProgressWriteReliability(unittest.TestCase):
     """Phase 6 reliability fix: on Windows, replacing the progress file fails with PermissionError while the web
     API has it open. Writes are retried with a bounded backoff; an exhausted retry is surfaced, never ignored."""

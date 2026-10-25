@@ -30,6 +30,9 @@ DEFAULT_TIMEOUT = 10
 MAX_RESPONSE_BYTES = 2097152 # 2 MB
 
 EXECUTION_ERRORS = []
+# URLs whose response exceeded the 2 MB cap and was analysed on its first 2 MB only (security phase 6). This is
+# informational: it does not make the audit partial or change any score; it was previously silent.
+TRUNCATED_URLS = []
 
 # --- Politeness: per-host request spacing, honoring robots.txt Crawl-delay ---
 MIN_REQUEST_INTERVAL = 0.5  # seconds, floor even when robots.txt is silent
@@ -485,7 +488,10 @@ def fetch_url(url, user_agent=AUDIT_USER_AGENT, timeout=DEFAULT_TIMEOUT, max_byt
         opener=urllib.request.build_opener(tracker)
         with _guarded_dns(), opener.open(req, timeout=timeout) as response:
             raw_data=response.read(max_bytes+1)
-            if len(raw_data)>max_bytes: raw_data=raw_data[:max_bytes]
+            if len(raw_data)>max_bytes:
+                raw_data=raw_data[:max_bytes]
+                if url not in TRUNCATED_URLS:
+                    TRUNCATED_URLS.append(url)
             encoding=response.info().get_content_charset() or 'utf-8'
             decoded=raw_data.decode(encoding, errors='replace')
             headers=response.info()
@@ -1135,6 +1141,7 @@ def schema_quality(page_type, schemas, details):
 
 def analyze_technical(url, max_crawl_pages=6, fetch_fn=None):
     EXECUTION_ERRORS.clear()
+    TRUNCATED_URLS.clear()
     """
     Executes a comprehensive, bounded technical audit.
     Strictly respects robots.txt, discovers sitemaps, crawls representative pages,
@@ -1683,7 +1690,9 @@ def analyze_technical(url, max_crawl_pages=6, fetch_fn=None):
             "affected_pages": []
         }
 
-    findings["execution"] = {"partial": bool(EXECUTION_ERRORS), "errors": list(EXECUTION_ERRORS)}
+    findings["crawl_scope"]["truncated_urls"] = list(TRUNCATED_URLS)
+    findings["execution"] = {"partial": bool(EXECUTION_ERRORS), "errors": list(EXECUTION_ERRORS),
+                             "truncated_pages": list(TRUNCATED_URLS)}
     return findings
 
 

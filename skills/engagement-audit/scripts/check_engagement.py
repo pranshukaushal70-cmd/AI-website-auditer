@@ -24,6 +24,9 @@ from contextlib import contextmanager
 
 
 EXECUTION_ERRORS = []
+# URLs whose response exceeded the 2 MB cap and was analysed on its first 2 MB only (security phase 6). This is
+# informational: it does not make the audit partial or change any score; it was previously silent.
+TRUNCATED_URLS = []
 
 # --- Politeness: per-host request spacing, honoring robots.txt Crawl-delay ---
 MIN_REQUEST_INTERVAL = 0.5  # seconds, floor even when robots.txt is silent
@@ -378,6 +381,8 @@ def fetch_page(url, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleW
             html = response.read(2 * 1024 * 1024 + 1)
             if len(html) > 2 * 1024 * 1024:
                 html = html[:2 * 1024 * 1024]
+                if url not in TRUNCATED_URLS:
+                    TRUNCATED_URLS.append(url)
             encoding = response.info().get_content_charset() or 'utf-8'
             return len(html), html.decode(encoding, errors='replace')
     except Exception as e:
@@ -777,6 +782,7 @@ def _aggregate_page_metric(page_reports, key, site_url):
 
 def analyze_engagement_pages(page_urls, max_pages=6, fetch_fn=None, render=False):
     EXECUTION_ERRORS.clear()
+    TRUNCATED_URLS.clear()
     """Audit a bounded set of representative URLs and aggregate engagement signals.
 
     Each page is analyzed independently so an excellent homepage cannot hide a poor
@@ -975,6 +981,7 @@ if __name__ == '__main__':
     report.setdefault("execution", {"partial": False, "errors": []})
     report["execution"]["partial"] = bool(report["execution"].get("partial") or EXECUTION_ERRORS)
     report["execution"]["errors"] = list(report["execution"].get("errors", [])) + list(EXECUTION_ERRORS)
+    report["execution"]["truncated_pages"] = list(TRUNCATED_URLS)
     output_data=json.dumps(report,indent=2)
     if args.output:
         with open(args.output,"w",encoding="utf-8") as f: f.write(output_data)

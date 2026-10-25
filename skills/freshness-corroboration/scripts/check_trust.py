@@ -26,6 +26,9 @@ from contextlib import contextmanager
 AUDIT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) BrandAuditBot/1.0"
 
 EXECUTION_ERRORS = []
+# URLs whose response exceeded the 2 MB cap and was analysed on its first 2 MB only (security phase 6). This is
+# informational: it does not make the audit partial or change any score; it was previously silent.
+TRUNCATED_URLS = []
 
 # --- Politeness: per-host request spacing, honoring robots.txt Crawl-delay ---
 MIN_REQUEST_INTERVAL = 0.5  # seconds, floor even when robots.txt is silent
@@ -391,6 +394,8 @@ def fetch_page_with_headers(url, user_agent="Mozilla/5.0 (Windows NT 10.0; Win64
             html_bytes = response.read(2 * 1024 * 1024 + 1)
             if len(html_bytes) > 2 * 1024 * 1024:
                 html_bytes = html_bytes[:2 * 1024 * 1024]
+                if url not in TRUNCATED_URLS:
+                    TRUNCATED_URLS.append(url)
             encoding = response.info().get_content_charset() or 'utf-8'
             decoded_html = html_bytes.decode(encoding, errors='replace')
             http_last_modified = response.headers.get('Last-Modified')
@@ -690,6 +695,7 @@ def _trust_status_rank(status):
 
 def analyze_trust_pages(page_urls, current_year=None, primary_external=None, max_pages=6):
     EXECUTION_ERRORS.clear()
+    TRUNCATED_URLS.clear()
     """Audit freshness/transparency on bounded representative pages.
 
     External corroboration is intentionally performed only for the first (primary) page
@@ -740,7 +746,7 @@ def analyze_trust_pages(page_urls, current_year=None, primary_external=None, max
     for key in ("corroboration_check","ambiguity_check","entity_confidence"):
         if isinstance(reports[0].get(key),dict): out[key]=reports[0][key]
     out["evidence"]=f"Multi-page trust audit checked {len(reports)} representative page(s). External entity corroboration was run once on the primary page; freshness and transparency were evaluated per page."
-    out["execution"]={"partial": bool(EXECUTION_ERRORS), "errors": list(EXECUTION_ERRORS)}
+    out["execution"]={"partial": bool(EXECUTION_ERRORS), "errors": list(EXECUTION_ERRORS), "truncated_pages": list(TRUNCATED_URLS)}
     return out
 
 
@@ -1230,7 +1236,8 @@ def analyze_trust(html_content, target_url, mock_data_path=None, current_year=No
         "suggested_queries": disambiguation_queries
     }
     
-    findings["execution"] = {"partial": bool(EXECUTION_ERRORS), "errors": list(EXECUTION_ERRORS)}
+    findings["execution"] = {"partial": bool(EXECUTION_ERRORS), "errors": list(EXECUTION_ERRORS),
+                             "truncated_pages": list(TRUNCATED_URLS)}
     return findings
 
 

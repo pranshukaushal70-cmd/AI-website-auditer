@@ -814,12 +814,16 @@ def main():
         priority_actions.append({"rank":rank,"finding_id":f.get("id"),"action":action.get("summary","Fix the identified issue."),"why_it_matters":f.get("evidence",""),"priority":action.get("priority",f.get("severity"))})
 
     subaudit_errors = []
+    truncated_pages = []  # informational (security phase 6): analysed on their first 2 MB only; not partial
     for label, data in (("technical", tech_data), ("trust", trust_data), ("engagement", engage_data)):
         if isinstance(data, dict):
             execution = data.get("execution", {})
             if isinstance(execution, dict):
                 for error in execution.get("errors", []) or []:
                     subaudit_errors.append(f"{label}: {error}")
+                for page in execution.get("truncated_pages", []) or []:
+                    if isinstance(page, str) and page not in truncated_pages:
+                        truncated_pages.append(page)
 
     report = {
         "site": args.site,
@@ -841,6 +845,7 @@ def main():
             "skipped_checks": collect_skipped(tech_data, trust_data, engage_data),
             "failed_pages": failed_pages,
             "errors": list(LOAD_ERRORS) + subaudit_errors,
+            "truncated_pages": truncated_pages[:20],
             "note": "A partial report is explicitly marked when a requested sub-audit could not be loaded or none of its checks could run. Missing or unavailable categories are not treated as clean passes or given proactive suggestions." if (missing_categories or LOAD_ERRORS or subaudit_errors or unavailable_categories) else "All requested sub-audits were loaded successfully."
         },
         "readiness": {"score":readiness,"band":readiness_band,"dimensions":{k:round(v,1) for k,v in cat_scores.items()},"method":"Internal diagnostic index based on severity- and confidence-weighted observed findings; it is not an Adobe score. Proactive suggestions do not reduce the index."},
