@@ -697,3 +697,30 @@ resolves, so no connection could be made.
 | `ruff check backend evaluation` | clean |
 | Frontend typecheck / `vitest` / build | clean / 30 passed / exit 0 |
 | Evaluation result files | all 20 byte-identical to `3a4f7b7` |
+
+## Session 15 — 2026-10-26 (H1 follow-up: make the link-escape tests provably run)
+
+Re-verified first: `556b473` (the H1 fix) is on `origin/main`, the tree was clean, and CI run `40228156539` on it
+passed all four jobs.
+
+Problem: the H1 symlink test skipped on **any** `OSError`, so it could have skipped silently on Linux as well. That could
+not be ruled out from CI: job logs need an authenticated GitHub session (the public API answers 403), and `gh` is not
+installed here. Fix (tests only, no product code):
+- `test_symlinked_file_out_of_dist_is_refused` may skip only on Windows (`os.name == "nt"`) when the account lacks the
+  symlink privilege; on any other OS the error is raised, so a green Linux CI run means the test ran and passed.
+- `test_linked_directory_out_of_dist_is_refused` (new) never skips: a directory symlink on POSIX, and on Windows a
+  directory junction (`_winapi.CreateJunction`, no privilege needed). It first asserts that the link really leads
+  outside `dist`, and removes only the junction with `os.rmdir` (never recursively), so its target is never touched.
+- Sensitivity: with a deliberately weakened `ui_file` that omits the post-resolution containment check, the junction
+  test fails (the file outside `dist` was served); with the real code it passes. The target directory remained intact
+  after cleanup in both runs.
+
+### Verification
+| Check | Result |
+|---|---|
+| `backend/tests/test_ui_files.py` link tests | junction test passed on Windows; file-symlink test skipped with the Windows-only reason (WinError 1314) |
+| Backend `pytest` (full), two runs | 259 passed, 1 skipped (the Windows file-symlink case) |
+| Engine `test_all_rubric_cases` / `test_round3_polish` / `test_engine_fixes` | 48 / 20 / 97 passed |
+| `verify_marketplace.py`; `evaluation/test_evaluation.py`; `run_evaluation.py --check` | exit 0; 10 passed; reproducible (`PYTHONHASHSEED` 0, 42) |
+| `ruff check backend evaluation`; frontend typecheck / `vitest` / build | clean; clean / 30 passed / exit 0 |
+| Evaluation result files | all 20 byte-identical to `556b473` |

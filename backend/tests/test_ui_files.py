@@ -103,16 +103,41 @@ def test_unc_paths_never_reach_the_filesystem(site, path):
     assert touched == [] and r.status_code == 404
 
 
-def test_symlink_out_of_dist_is_refused(site):
+def test_symlinked_file_out_of_dist_is_refused(site):
+    """May skip only on Windows, where creating a symlink needs a privilege; elsewhere a failure fails the test, so
+    CI on Linux always exercises it."""
     client, dist, tmp_path = site
     try:
         os.symlink(tmp_path / "secret.txt", dist / "leak.txt")
-        os.symlink(tmp_path, dist / "outside", target_is_directory=True)
-    except (OSError, NotImplementedError) as exc:
-        pytest.skip(f"symlinks unavailable here: {exc}")
-    for path in ("/leak.txt", "/outside/secret.txt"):
-        r = client.get(path)
-        assert r.status_code == 404 and "TOP-SECRET" not in r.text, path
+    except OSError as exc:
+        if os.name != "nt":
+            raise
+        pytest.skip(f"this Windows account cannot create symlinks: {exc}")
+    r = client.get("/leak.txt")
+    assert r.status_code == 404 and "TOP-SECRET" not in r.text
+
+
+def test_linked_directory_out_of_dist_is_refused(site):
+    """Never skipped: a directory symlink on POSIX, and on Windows a directory junction (no privilege needed)."""
+    client, dist, tmp_path = site
+    outside = tmp_path / "outside-dist"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOP-SECRET", encoding="utf-8")
+    link = dist / "linked"
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(link))
+    else:
+        os.symlink(outside, link, target_is_directory=True)
+    try:
+        assert (link / "secret.txt").read_text(encoding="utf-8") == "TOP-SECRET"  # the link really leads outside
+        r = client.get("/linked/secret.txt")
+        assert r.status_code == 404 and "TOP-SECRET" not in r.text
+    finally:
+        if os.name == "nt":
+            os.rmdir(link)  # removes the junction itself, never its target
+        else:
+            link.unlink()
 
 
 def test_ui_file_decides_from_the_string_alone(tmp_path):

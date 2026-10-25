@@ -142,8 +142,9 @@ with `X-Request-ID` and the security headers.
   filesystem call. An allowed path is joined under `dist`, resolved, and its containment re-checked (a symlink leading
   out of `dist` is refused). Missing files and client-side routes still load `index.html`; `/api/*` is unchanged.
   Tests: `backend/tests/test_ui_files.py` (46: traversal, absolute, UNC, Windows-style and encoded paths, device names,
-  NUL, hidden files, a filesystem-call interception proving UNC paths never reach `pathlib`, symlink escape, valid
-  assets, missing assets, fallback, API routes). 35 of them fail against the previous route.
+  NUL, hidden files, a filesystem-call interception proving UNC paths never reach `pathlib`, symlink and junction
+  escapes, valid assets, missing assets, fallback, API routes; 47 since the session-15 follow-up). 35 of the original
+  46 fail against the previous route.
 
 ### Data handling
 - Stored: audit metadata, the composed report (findings and evidence snippets), and prioritisation. Not stored: raw
@@ -183,8 +184,10 @@ with `X-Request-ID` and the security headers.
 - Cross-site GET requests from other web pages still reach the local server (the guard checks `Origin` only for
   state-changing methods). The built-UI route no longer lets them touch other hosts (phase 7, H1), but a
   `Sec-Fetch-Site` check that refuses cross-site sub-resource requests is a possible further hardening (not
-  implemented). The symlink-escape test is skipped on Windows when the account cannot create symlinks; it runs on CI
-  (Linux).
+  implemented).
+- Link-escape tests for the built-UI route: the directory case runs everywhere (a symlink on POSIX, a junction on
+  Windows, which needs no privilege). The file-symlink case may skip only on Windows accounts without the symlink
+  privilege; on any other OS a failure to create the link fails the test, so a green Linux CI run means it ran.
 - Retention is off by default (by decision). An operator who wants deletion must set `BRAND_PLATFORM_RETENTION_DAYS`.
 - The original verifier's mock server now binds `127.0.0.1` (O8, resolved in phase 5). It still uses a fixed port,
   8999, and its `localhost` target pays a measured ~2 s per connection on this machine because `localhost` resolves to
