@@ -72,6 +72,8 @@ export interface EngineReport {
     robots_checked: boolean;
     sitemap_checked: boolean;
     sitemap_found?: boolean;
+    /** Sitemaps declared in robots.txt on another host: skipped, never fetched (security phase 6). */
+    sitemaps_skipped_offsite?: string[];
     render_check: boolean;
     render_status?: string;
     external_sources_checked: number;
@@ -85,6 +87,8 @@ export interface EngineReport {
     unavailable_checks?: UnavailableCheck[];
     skipped_checks?: UnavailableCheck[];
     failed_pages?: string[];
+    /** Pages larger than 2 MB, analysed on their first 2 MB only. Informational (security phase 6). */
+    truncated_pages?: string[];
     errors?: string[];
     runtime_seconds?: number;
     note?: string;

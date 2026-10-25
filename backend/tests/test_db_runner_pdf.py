@@ -134,6 +134,26 @@ def test_pdf_renders_unicode_and_markup_safely():
     assert pdf.startswith(b"%PDF") and len(pdf) > 2000
 
 
+def test_pdf_lists_truncated_pages_and_skipped_offsite_sitemaps():
+    """Security phase 6: both are reported in the execution notes (informational, not partial)."""
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    report = sample_report()
+    report["execution"]["truncated_pages"] = ["https://e.example/huge"]
+    report["scope"]["sitemaps_skipped_offsite"] = ["https://cdn.e-example.net/sitemap.xml"]
+    findings = prioritise([dict(f) for f in report["findings"]], 2)
+    audit = {"id": "a" * 32, "url": "https://e.example/", "host": "e.example", "status": "partial", "engine_version": "v"}
+    text = " ".join(page.extract_text() for page in PdfReader(BytesIO(render_pdf(audit, report, findings))).pages)
+    text = " ".join(text.split())
+    assert "only the first 2 MB was analysed: https://e.example/huge" in text
+    assert "on another host were not fetched" in text and "https://cdn.e-example.net/sitemap.xml" in text
+    plain = render_pdf(audit, sample_report(), findings)
+    plain_text = " ".join(page.extract_text() for page in PdfReader(BytesIO(plain)).pages)
+    assert "first 2 MB" not in plain_text and "another host" not in plain_text
+
+
 def test_pdf_contains_disclaimer_scope_and_ranked_factors():
     from io import BytesIO
 

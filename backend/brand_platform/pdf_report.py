@@ -169,6 +169,11 @@ def render_pdf(audit: dict, report: dict, findings: list[dict]) -> bytes:
         notes.append("Checks that could not run: " + ", ".join(f"{c['category']}/{c['check']}" for c in execution["unavailable_checks"]) + ".")
     if execution.get("failed_pages"):
         notes.append("Pages that failed to load: " + ", ".join(execution["failed_pages"]) + ".")
+    if execution.get("truncated_pages"):
+        notes.append("Larger than 2 MB, so only the first 2 MB was analysed: " + ", ".join(execution["truncated_pages"]) + ".")
+    if scope.get("sitemaps_skipped_offsite"):
+        notes.append("Sitemaps declared in robots.txt on another host were not fetched (only the audited site is crawled): "
+                     + ", ".join(scope["sitemaps_skipped_offsite"]) + ".")
     for err in (execution.get("errors") or [])[:10]:
         notes.append("Error: " + str(err))
     notes += ["Unavailable checks are not treated as passes. A sample of at most six pages cannot represent an entire site.",

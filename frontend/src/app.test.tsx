@@ -2,9 +2,10 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, type Audit, type Finding } from "./api";
+import { api, ApiError, type Audit, type EngineReport, type Finding } from "./api";
 import { FindingsExplorer, filterFindings } from "./components/FindingsExplorer";
 import { ProgressStepper } from "./components/ProgressStepper";
+import { ExecutionNotice, SeverityPanel } from "./components/ReportSummary";
 import { consentLabel, formatDuration, safeHref } from "./lib/format";
 import { precheckAuditUrl } from "./lib/url";
 import { latestPerHost } from "./pages/Dashboard";
@@ -209,5 +210,44 @@ describe("history table on narrow screens", () => {
     }
     expect(within(rows[1]!).getByRole("checkbox")).toBeDisabled();
     expect(within(rows[1]!).getByText("Not recorded (predates consent)")).toBeInTheDocument();
+  });
+});
+
+describe("scope notes (security phase 6)", () => {
+  const report = (execution: Partial<EngineReport["execution"]>, scope: Partial<EngineReport["scope"]> = {}): EngineReport => ({
+    site: "https://e.example/", audited_at: "2026-10-25T10:00:00Z",
+    summary: { total_findings: 0, critical: 0, high: 0, medium: 0, proactive_suggestions_count: 0 },
+    scope: { pages_checked: 2, robots_checked: true, sitemap_checked: true, sitemap_found: false, render_check: false,
+             external_sources_checked: 0, ...scope },
+    execution: { partial: false, ...execution },
+  });
+
+  it("shows nothing for a complete audit without notes", () => {
+    const { container } = render(<ExecutionNotice report={report({})} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("lists truncated pages and skipped off-site sitemaps as information, not as missing evidence", () => {
+    render(<ExecutionNotice report={report({ truncated_pages: ["https://e.example/huge"] },
+      { sitemaps_skipped_offsite: ["https://cdn.other.example/sitemap.xml"] })} />);
+    expect(screen.getByRole("heading", { name: "Audit scope notes" })).toBeInTheDocument();
+    expect(screen.getByText(/only the first 2 MB was analysed: https:\/\/e\.example\/huge/)).toBeInTheDocument();
+    expect(screen.getByText(/on another host were not fetched .*https:\/\/cdn\.other\.example\/sitemap\.xml/)).toBeInTheDocument();
+    expect(screen.queryByText(/not counted as passes/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the partial-audit warning when evidence is missing", () => {
+    render(<ExecutionNotice report={report({ partial: true, truncated_pages: ["https://e.example/huge"] })} />);
+    expect(screen.getByRole("heading", { name: /Partial audit/ })).toBeInTheDocument();
+    expect(screen.getByText(/not counted as passes/)).toBeInTheDocument();
+    expect(screen.getByText(/only the first 2 MB was analysed/)).toBeInTheDocument();
+  });
+
+  it("says when declared sitemaps on another host were not fetched", () => {
+    const audit = { max_pages: 6 } as Audit;
+    const { rerender } = render(<SeverityPanel audit={audit} report={report({}, { sitemaps_skipped_offsite: ["https://cdn.x/s.xml", "https://y/s.xml"] })} />);
+    expect(screen.getByText("Checked, none found on this site · 2 on another host not fetched")).toBeInTheDocument();
+    rerender(<SeverityPanel audit={audit} report={report({}, { sitemap_found: true })} />);
+    expect(screen.getByText("Found")).toBeInTheDocument();
   });
 });

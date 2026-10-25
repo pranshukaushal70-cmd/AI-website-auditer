@@ -52,10 +52,16 @@ export function SeverityPanel({ audit, report }: { audit: Audit; report: EngineR
       <dl className="grid grid-3 small">
         <div><dt className="muted">Pages checked</dt><dd className="mono">{report.scope.pages_checked} of {audit.max_pages} budget</dd></div>
         <div><dt className="muted">robots.txt</dt><dd>{report.scope.robots_checked ? "Checked" : "Not checked"}</dd></div>
-        <div><dt className="muted">Sitemap</dt><dd>{report.scope.sitemap_found ? "Found" : report.scope.sitemap_checked ? "Checked, none found" : "Not checked"}</dd></div>
+        <div><dt className="muted">Sitemap</dt><dd>{sitemapLabel(report)}</dd></div>
       </dl>
     </section>
   );
+}
+
+function sitemapLabel(report: EngineReport): string {
+  const status = report.scope.sitemap_found ? "Found" : report.scope.sitemap_checked ? "Checked, none found on this site" : "Not checked";
+  const skipped = report.scope.sitemaps_skipped_offsite?.length ?? 0;
+  return skipped ? `${status} · ${skipped} on another host not fetched` : status;
 }
 
 /** Makes partial execution impossible to miss: unavailable checks are never presented as passes. */
@@ -65,11 +71,15 @@ export function ExecutionNotice({ report }: { report: EngineReport }) {
   const missing = ex.missing_categories ?? [];
   const checks = ex.unavailable_checks ?? [];
   const failed = ex.failed_pages ?? [];
-  if (!ex.partial && checks.length === 0 && failed.length === 0) return null;
+  const truncated = ex.truncated_pages ?? [];
+  const skippedSitemaps = report.scope.sitemaps_skipped_offsite ?? [];
+  const missingEvidence = ex.partial || checks.length > 0 || failed.length > 0;
+  if (!missingEvidence && truncated.length === 0 && skippedSitemaps.length === 0) return null;
+  const heading = ex.partial ? "Partial audit — some evidence is missing" : missingEvidence ? "Some checks could not run" : "Audit scope notes";
   return (
     <section className={`notice ${ex.partial ? "" : "notice-info"}`} aria-labelledby="exec-heading">
-      <h3 id="exec-heading">{ex.partial ? "Partial audit — some evidence is missing" : "Some checks could not run"}</h3>
-      <p className="small">Checks that could not run are not counted as passes and produce no findings.</p>
+      <h3 id="exec-heading">{heading}</h3>
+      {missingEvidence && <p className="small">Checks that could not run are not counted as passes and produce no findings.</p>}
       <ul className="small">
         {[...missing, ...unavailableCats].length > 0 && (
           <li>No usable evidence for: <strong>{[...new Set([...missing, ...unavailableCats])].join(", ")}</strong>.</li>
@@ -78,6 +88,15 @@ export function ExecutionNotice({ report }: { report: EngineReport }) {
           <li>Unavailable checks: {checks.map((c) => `${CHECK_LABEL[c.check] ?? c.check} (${c.category})`).join("; ")}.</li>
         )}
         {failed.length > 0 && <li className="break">Pages that failed to load: {failed.join(", ")}.</li>}
+        {truncated.length > 0 && (
+          <li className="break">Larger than 2 MB, so only the first 2 MB was analysed: {truncated.join(", ")}.</li>
+        )}
+        {skippedSitemaps.length > 0 && (
+          <li className="break">
+            Sitemaps declared in robots.txt on another host were not fetched (only the audited site is crawled):{" "}
+            {skippedSitemaps.join(", ")}.
+          </li>
+        )}
         {(ex.errors ?? []).slice(0, 5).map((e) => <li key={e} className="break mono">{e}</li>)}
       </ul>
     </section>
