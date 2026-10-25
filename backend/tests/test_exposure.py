@@ -163,6 +163,24 @@ def test_launcher_binds_loopback_and_ignores_proxy_headers():
         assert launcher.parse_args(["--host", host]).host == host
 
 
+def test_launcher_prints_the_local_only_no_auth_warning_before_serving():
+    import io
+    events, out = [], io.StringIO()
+    launcher.main(["--port", "8123"], run=lambda app, **kw: events.append(out.getvalue()), out=out)
+    banner = events[0]  # already printed when the server starts
+    assert banner.startswith("Brand AI-Readiness platform: http://127.0.0.1:8123/")
+    assert "LOCAL-ONLY" in banner and "refuses requests from other computers" in banner
+    assert "NO AUTHENTICATION" in banner and "can start audits and read every stored audit" in banner
+    assert "reverse proxy, tunnel or port forwarding" in banner
+    assert launcher.startup_banner("::1", 8000).startswith("Brand AI-Readiness platform: http://[::1]:8000/")
+
+
+def test_launcher_prints_no_banner_when_it_refuses_to_start(capsys):
+    with pytest.raises(SystemExit):
+        launcher.main(["--host", "0.0.0.0"], run=lambda app, **kw: None)
+    assert "Brand AI-Readiness platform:" not in capsys.readouterr().err
+
+
 # --- helpers ---------------------------------------------------------------------------------------
 
 def test_helper_parsing():

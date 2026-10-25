@@ -38,6 +38,9 @@ export function App() {
         <div className="footer-inner">
           <span>Brand AI-Readiness Intelligence Platform · read-only, bounded, robots-aware audits</span>
           <span>Readiness index is an internal diagnostic — not an Adobe score.</span>
+          <span className="footer-warning" role="note">
+            Local-only · no authentication: any user or program on this computer can start audits and read every stored audit.
+          </span>
         </div>
       </footer>
     </>

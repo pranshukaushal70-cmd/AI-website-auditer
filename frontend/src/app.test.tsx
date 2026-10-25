@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type Audit, type EngineReport, type Finding } from "./api";
 import { FindingsExplorer, filterFindings } from "./components/FindingsExplorer";
+import { App } from "./App";
 import { ProgressStepper } from "./components/ProgressStepper";
 import { ExecutionNotice, SeverityPanel } from "./components/ReportSummary";
 import { consentLabel, formatDuration, safeHref } from "./lib/format";
@@ -250,4 +251,12 @@ describe("scope notes (security phase 6)", () => {
     rerender(<SeverityPanel audit={audit} report={report({}, { sitemap_found: true })} />);
     expect(screen.getByText("Found")).toBeInTheDocument();
   });
+});
+
+it("states in the footer that the platform is local-only with no authentication (security phase 6)", () => {
+  render(<MemoryRouter initialEntries={["/no-such-page"]}><App /></MemoryRouter>);
+  const note = screen.getByRole("note");
+  expect(within(screen.getByRole("contentinfo")).getByRole("note")).toBe(note);
+  expect(note).toHaveTextContent(
+    "Local-only · no authentication: any user or program on this computer can start audits and read every stored audit.");
 });

@@ -30,12 +30,25 @@ def parse_args(argv=None) -> argparse.Namespace:
     return args
 
 
-def main(argv=None, run=None) -> int:
+def startup_banner(host: str, port: int) -> str:
+    """The warning printed before the server starts (security phase 6). Each claim matches what the code enforces:
+    loopback-only binding (parse_args), loopback-only clients and Host headers (ExposureGuard), and no accounts."""
+    shown = f"[{host}]" if ":" in host else host
+    return "\n".join([
+        f"Brand AI-Readiness platform: http://{shown}:{port}/",
+        "  LOCAL-ONLY: binds a loopback address and refuses requests from other computers.",
+        "  NO AUTHENTICATION: any user or program on this computer can start audits and read every stored audit.",
+        "  Do not expose it through a reverse proxy, tunnel or port forwarding: that is unsupported (docs/SECURITY.md).",
+    ])
+
+
+def main(argv=None, run=None, out=None) -> int:
     args = parse_args(argv)
     if run is None:
         import uvicorn
         run = uvicorn.run
     from .main import app
+    print(startup_banner(args.host, args.port), file=out or sys.stderr, flush=True)
     run(app, host=args.host, port=args.port, **UVICORN_OPTIONS)
     return 0
 
