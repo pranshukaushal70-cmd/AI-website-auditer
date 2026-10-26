@@ -2,7 +2,7 @@
 name: audit-orchestrator
 description: The entrypoint skill for the Brand AI-Readiness Audit marketplace. Orchestrates crawling, trust corroboration, and engagement analysis skills, compiling them into a single report.
 license: MIT
-compatibility: Requires Python 3.9+ with standard library. Optional Playwright is used for rendered checks when explicitly enabled.
+compatibility: Requires Python 3.9+ with standard library. If Playwright is installed, the technical stage renders pages automatically (engagement rendering needs --render-engagement); browser rendering is not covered by the SSRF guard, so set BRAND_AUDIT_DISABLE_RENDER=1 when auditing untrusted sites.
 allowed-tools: Python standard library subprocess, filesystem read/write in the sandbox, and the packaged sub-skill scripts only.
 ---
 

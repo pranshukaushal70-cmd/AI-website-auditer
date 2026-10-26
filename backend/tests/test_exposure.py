@@ -194,7 +194,7 @@ def test_direct_navigation_reads_pass_but_cannot_change_state(built):
         assert built.get(path, headers=navigation("none")).status_code == 200, path
     assert built.head("/", headers=navigation("none")).status_code != 403
     assert error_code(built.get(AUDIT + "/report.pdf", headers=navigation("none"))) == "audit_not_found"
-    assert built.get("/api/docs", headers=navigation("none")).status_code == 200
+    assert built.get("/api/openapi.json", headers=navigation("none")).status_code == 200
     assert refused(built.post(AUDIT + "/cancel", headers={**navigation("none"), "Origin": OWN}))
 
 
@@ -304,6 +304,54 @@ def test_unknown_fetch_site_values_are_refused(built, value):
 def test_fetch_site_values_are_case_and_space_insensitive(built):
     assert built.get("/api/audits", headers={"Sec-Fetch-Site": " Same-Origin "}).status_code == 200
     assert refused(built.get("/api/audits", headers={"Sec-Fetch-Site": "Cross-Site"}))
+
+
+# --- API docs and CSP (security phase 7, M3A) --------------------------------------------------------
+
+FULL_CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+
+
+@pytest.mark.parametrize("path", ["/api/docs", "/api/docs/", "/api/docs/oauth2-redirect", "/api/redoc", "/docs", "/redoc"])
+def test_the_swagger_ui_is_not_served(app, built, path):
+    """FastAPI's Swagger UI loaded an unpinned script from cdn.jsdelivr.net without an integrity check, on the API's
+    origin and exempt from the CSP. It is disabled; nothing may serve it, and with a built UI /api/docs must not
+    fall back to index.html either."""
+    for client in (client_for(app), built):
+        r = client.get(path, headers=fetch_meta("same-origin"))
+        assert "cdn.jsdelivr.net" not in r.text and "swagger" not in r.text.lower(), path
+        if path.startswith("/api/"):
+            assert r.status_code == 404 and error_code(r) == "not_found", path
+
+
+def test_the_openapi_schema_is_still_served(built):
+    r = built.get("/api/openapi.json", headers=fetch_meta("same-origin"))
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/json")
+    schema = r.json()
+    assert schema["openapi"].startswith("3.") and schema["info"]["title"].startswith("Brand AI-Readiness")
+    for route in ("/api/health", "/api/config", "/api/audits", "/api/audits/{audit_id}", "/api/audits/{audit_id}/cancel",
+                  "/api/audits/{audit_id}/report.pdf", "/api/compare"):
+        assert route in schema["paths"], route
+    assert "/api/docs" not in schema["paths"] and "/{path}" not in schema["paths"]
+    assert "cdn.jsdelivr.net" not in r.text
+
+
+@pytest.mark.parametrize("path", ["/api/docs", "/api/openapi.json", "/api/health", "/api/no-such-endpoint", "/",
+                                  "/dashboard", "/assets/index-B-vUFE-P.js", "/favicon.svg"])
+def test_every_response_carries_the_full_csp(built, path):
+    """The /api/docs CSP exemption is gone: the docs 404, the schema, API responses, UI pages and assets all get the
+    same policy and the other security headers."""
+    r = built.get(path, headers=fetch_meta("same-origin"))
+    assert r.headers["Content-Security-Policy"] == FULL_CSP, path
+    assert r.headers["X-Frame-Options"] == "DENY" and r.headers["X-Content-Type-Options"] == "nosniff", path
+    assert r.headers["Referrer-Policy"] == "no-referrer", path
+
+
+def test_rejections_also_carry_the_full_csp(app):
+    r = client_for(app).get("/api/docs", headers=fetch_meta("cross-site", mode="no-cors", dest="script"))
+    assert refused(r) and r.headers["Content-Security-Policy"] == FULL_CSP
+    r = client_for(app).get("/api/docs", headers={"Host": "attacker.example"})
+    assert r.status_code == 400 and r.headers["Content-Security-Policy"] == FULL_CSP
 
 
 def test_cross_site_rejections_keep_the_standard_envelope(app):

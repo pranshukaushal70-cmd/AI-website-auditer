@@ -93,11 +93,30 @@ Scope: the web platform (`backend/`, `frontend/`) and the audit engine it runs (
   robots.txt through the whole platform).
 - Headless rendering is **disabled** in the platform (`BRAND_AUDIT_DISABLE_RENDER=1`) because a browser's own network
   stack bypasses these checks.
+- **Engine CLI rendering is not covered by the SSRF guard** (security phase 7, M3A). When the engine scripts are run
+  directly (`run_audit.py`, `check_technical.py`, `check_engagement.py`) and Playwright is installed, the technical
+  stage renders the homepage and up to three crawled pages in headless Chromium **automatically**; the engagement stage
+  renders with `--render` (`run_audit.py --render-engagement`). Chromium does its own DNS resolution, follows its own
+  redirects and loads every sub-resource and script the page asks for, with none of `_validate_public_http_url`,
+  `_guarded_dns`, the 2 MB cap or the same-host redirect rule applied. A hostile audited page can therefore make
+  the auditing machine send requests to private, loopback or cloud-metadata addresses (blind SSRF). Only the URLs
+  passed to `page.goto` were validated by the normal crawl first. When auditing a site you do not trust from the CLI,
+  set `BRAND_AUDIT_DISABLE_RENDER=1` or do not install Playwright; rendered checks then report `unavailable`.
+- **Proxies** (security phase 7, M3A; behaviour unchanged, verified). The engine's urllib openers use the proxy from
+  `HTTP_PROXY`/`HTTPS_PROXY` (forwarded by the runner) and, on Windows, the system proxy setting even when no variable
+  is set. Through a proxy, `_guarded_dns()` filters the **proxy's** address, not the target's: with a loopback or
+  private proxy every fetch fails (verified: `DNS resolution for 127.0.0.1 returned no public IP addresses`), and with
+  a public proxy the target hostname is resolved by the proxy, outside the connect-time filter. Per-hop validation
+  still runs locally, but the DNS-rebinding window that `_guarded_dns()` narrows is open again, and the proxy may
+  reach networks of its own. Running audits through a proxy is therefore unsupported.
+- **The engine has no port allow-list** (CLI only). The platform admits only `BRAND_PLATFORM_ALLOWED_PORTS` (default
+  80, 443) and crawling stays on the audited host *and port*, so this matters only when the engine CLI is given a URL
+  with another port. Every address is still checked as public.
 
 ### Process isolation and limits (`runner.py`)
 - Each audit runs `run_audit.py` in its own process group with a **minimal environment**: only PATH, temp and locale
   variables, proxy and CA settings, and the engine switches. API keys and passwords in the server environment are not
-  inherited (tested).
+  inherited (tested). Forwarding the proxy variables does not make proxies supported; see the proxy bullet above.
 - Hard kill of the whole process tree at runtime limit + grace; cancellation kills the tree too (both tested).
 - Progress-file integrity (phase 6): the engine retries a failed progress write up to 7 times (about 0.6 s; on Windows
   the replace fails while the API is reading the file). An exhausted retry is printed as an error, and if the final
@@ -163,7 +182,17 @@ with `X-Request-ID` and the security headers.
 - Request IDs: a client value is accepted only if it matches `^[A-Za-z0-9-]{8,64}$`; otherwise a new one is generated.
 - Headers: `Content-Security-Policy` (`default-src 'self'`, no inline script **or** style; bars are drawn as SVG so
   `unsafe-inline` is not needed), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
-  `/api/docs` (Swagger UI) is exempt from the CSP because it loads assets from a CDN.
+  Responses produced through the application's middleware carry these headers and `X-Request-ID`: 404s and guard
+  rejections are covered by tests, and a 422 validation error was checked on the real launcher. Some responses do
+  **not** (verified on the real launcher or the in-process app, 2026-10-27): an **unhandled
+  exception's 500** (Starlette's top-level error handler runs outside the middleware that adds them; the body is still
+  the generic error envelope, but its `request_id` field is the placeholder `"-"`, so it cannot be used to correlate
+  the response with server logs, and there is no `X-Request-ID` header, CSP, `nosniff`, framing or referrer header),
+  and errors uvicorn sends itself before the application runs, such as a 400 for a malformed request
+  line or an oversized header. See "Known gaps". There is no path exemption since
+  security phase 7, M3A: the interactive Swagger UI at `/api/docs`, which was exempt because FastAPI's page loads
+  `swagger-ui-dist@5` (a floating version, no integrity check) from cdn.jsdelivr.net onto the API's own origin, is
+  disabled. `/api/docs` returns 404. The OpenAPI schema remains at `/api/openapi.json`.
 - CORS allows only the explicitly configured loopback origins (none by default since M2) and the methods GET and POST.
 - The UI renders crawled text as text (React escaping, no `dangerouslySetInnerHTML`), and links only `http:`/`https:`
   URLs with `rel="noopener noreferrer nofollow"`.
@@ -206,7 +235,33 @@ with `X-Request-ID` and the security headers.
   - Tests: `backend/tests/test_retention.py` (43), including a file-level check that deleted URLs, hosts, report and
     finding text no longer appear in the database files (and that the same check fails with `secure_delete` off).
 
+## Dependency status (checked 2026-10-27; no versions changed)
+Checked with `npm audit` against `frontend/package-lock.json` and the OSV database for every package installed in the
+backend virtual environment. Applicability was assessed against how this project uses each package.
+
+| Package (pinned) | Advisories | Applies here? |
+|---|---|---|
+| `starlette` 0.41.3 (via `fastapi` 0.115.6), runtime | GHSA-7f5h-v6xp-fcq8: quadratic CPU when merging many `Range` values in `FileResponse` | **Yes, low.** The built-UI route uses `FileResponse`. Measured on the real launcher (uvicorn 0.32.1, h11 0.16, development laptop, 2026-10-27): the largest accepted header is about 63 KiB (a 64 KiB header gets 400), room for about 5,000 ranges. Client-measured response times for one request: 2,000 ranges (20.8 KB header) 3.3 s, 3,000 (32.8 KB) 4.6 s, 4,000 (44.8 KB) 7.1 s, 5,000 (56.8 KB) 9.1 s. The work runs on a worker thread: `/api/health` answered in 0.25 s while a 5,000-range request was in progress, so one request does not stall the server; many concurrent ones would compete for CPU and worker threads. Only a local program can send it: browsers need a CORS preflight for such a header, and cross-site requests are refused (M2). Fixed in Starlette 0.49.1, which needs a FastAPI upgrade (not done). |
+| `starlette` 0.41.3, runtime | Six others (multipart and form limits, `Host` poisoning of `request.url`, `StaticFiles` UNC paths, `HTTPEndpoint` methods) | No. No form or multipart parsing (JSON bodies only, 64 KiB), `Host` is validated before routing and `request.url` is not used for decisions, no `StaticFiles` (the built-UI route is custom, phase 7 H1), no `HTTPEndpoint`. |
+| `react-router-dom` 6.28.0, shipped in the UI | Open redirects via untrusted paths, SSR hydration | No. Every navigation target is a fixed path or a server-generated hex audit id; there is no server-side rendering. Fixed in 6.30.x (not upgraded). |
+| `vite` 5.4.11, development server only | **GHSA-v6wh-96g9-6wx3**: `/__open-in-editor?file=` passes the value to `fs.existsSync`; on Windows a `\\host\share` path makes the machine open an SMB connection to that host and send the developer's NTLMv2 hash. Also GHSA-vg6x-rcgg-rjx6 (CORS `*` lets any website read dev-server responses) and Windows `server.fs.deny` bypasses. | **Yes, while `npm run dev` runs** (confirmed by reading the installed code; not exploited). Any website visited at the same time can trigger the SMB connection with an `<img>`. The production build and the API are not affected, and API data stays protected through the proxy (M2 refuses cross-site requests; verified). The hash-leak fix exists only in Vite 6.4.3 and later; 5.4.21 fixes the CORS and `fs.deny` issues. **Workaround until upgraded:** run the dev server only while developing, stop it afterwards, and do not browse untrusted websites while it runs. Otherwise use the single-process mode (`npm run build`, then `python -m brand_platform`), which does not start Vite. |
+| `vitest` 2.1.8, `tinypool`, `esbuild` (dev only) | RCE when the Vitest API/UI server listens; prototype-pollution gadget; esbuild serve CORS | No. Tests run with `vitest run`, which starts no server; `tinypool` options are not attacker-controlled; esbuild's own server is not used. |
+| `pypdf` 5.1.0, `pytest` 8.3.4, `pip` 24.0 (test and tooling only) | Various | No runtime exposure. `pypdf` only parses the PDFs this project generates, in tests. |
+| `uvicorn`, `pydantic`, `reportlab`, `h11`, `httpx` and the rest | None reported | — |
+
+Upgrades are deliberately left to a separate, tested change.
+
 ## Known gaps (not implemented)
+- **Unhandled-error 500s lack the security headers and the `X-Request-ID` header** (found in the M3A pre-commit
+  review, 2026-10-27). The generic `internal_error` body is returned, so no stack trace leaks, but the response is
+  built by Starlette's outermost error handler, outside the middleware that adds the headers. Low impact (a fixed JSON
+  body with no page content). These responses lack the CSP, `nosniff`, framing and referrer headers. They also cannot
+  be matched to server logs: the `X-Request-ID` header is missing, the body's `request_id` is the placeholder `-` (the
+  handler runs after the request context has been reset, so even a client-supplied id is lost), and the error log line
+  records `request_id: "-"` too (verified in-process, 2026-10-27). A fix
+  (for example adding the headers in that handler, or a pure ASGI wrapper outside it) is a code change for a later
+  phase. Errors uvicorn sends before the application runs (malformed request line, oversized header) cannot carry
+  them either.
 - **No authentication or authorisation.** Every local process and local user on the machine can start audits and read
   every stored audit. Since phase 1 nothing else can reach the API. **Public, LAN and reverse-proxied deployment are not
   supported** until proper authentication and deployment security are implemented.

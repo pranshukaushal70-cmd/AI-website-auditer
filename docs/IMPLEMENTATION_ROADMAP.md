@@ -84,11 +84,15 @@ Acceptance criteria:
 - ⬜ Content ablations (multi-signal freshness vs copyright-only; formatting-aware vs naive fact parity).
 
 ### M5 — Hardening, CI, docs 🟡
-- 🟡 `.github/workflows/ci.yml` written: engine suites, verifier, evaluation check (Ubuntu and Windows), backend
-  pytest + ruff, frontend typecheck + tests + build. YAML validated locally; **not yet run on GitHub** (no repository).
+- ✅ `.github/workflows/ci.yml`: engine suites, verifier, evaluation check (Ubuntu and Windows), backend
+  pytest + ruff, frontend typecheck + tests + build. Runs on GitHub on every push (for example run `40378708123` on
+  `b75101e`, all four jobs passed).
 - ✅ Docs: `SECURITY.md`, `API_REFERENCE.md`, `CHANGE_LOG.md`, `TESTING_AND_EVALUATION.md`.
 - ⬜ Remaining docs: `SYSTEM_ARCHITECTURE.md`, `LIMITATIONS.md`, `FINAL_YEAR_REPORT_OUTLINE.md`, `VIVA_PREPARATION.md`.
-- ⬜ Clean-install test from the documented steps; low-cost deployment notes (single VM / container, no paid services).
+- ⬜ Clean-install test from the documented steps.
+- ⛔ Deployment notes (single VM / container): **not planned while the platform is local-only.** There is no
+  authentication, so any network deployment is unsupported (`SECURITY.md`); this item returns only after real
+  authentication exists.
 
 ### M6 — Security hardening 🟡 (approved 5-phase plan, 2026-10-25)
 - ✅ Phase 1: local-only API exposure (`exposure.py`, launcher, 51 tests).

@@ -1,7 +1,13 @@
 # API Reference
 
-Base path `/api`. JSON in and out. Interactive OpenAPI docs: `/api/docs`; schema: `/api/openapi.json`.
-Timestamps are UTC ISO-8601 (`2026-10-23T10:25:11Z`). Every response carries `X-Request-ID`.
+Base path `/api`. JSON in and out. OpenAPI schema: `/api/openapi.json`. There is no interactive docs page: `/api/docs`
+was removed in security phase 7 (M3A) because FastAPI's Swagger UI loads an unpinned script from a CDN onto the API's
+origin. Load the schema into any OpenAPI viewer you trust, or read it with `curl -s localhost:8000/api/openapi.json`.
+Timestamps are UTC ISO-8601 (`2026-10-23T10:25:11Z`). Responses produced by the application carry an `X-Request-ID`
+header and the security headers, with two exceptions: an unhandled-error 500 (`internal_error`) has neither, and
+the `request_id` field in its body is the placeholder `"-"`, so it cannot be used to correlate the response with
+server logs; and errors the HTTP server sends before the application runs (for example a
+400 for a malformed request line or an oversized header) have neither header nor body envelope (`docs/SECURITY.md`).
 The API is local-only: loopback clients and `Host: localhost | 127.0.0.1 | [::1]` only; request bodies must be
 `application/json` and at most 64 KiB; state-changing requests from a foreign `Origin` are refused, and so are browser
 requests that `Sec-Fetch-Site` marks as coming from another site (`docs/SECURITY.md`). Clients such as `curl` that send

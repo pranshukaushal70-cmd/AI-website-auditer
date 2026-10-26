@@ -150,9 +150,11 @@ def _is_public_ip(ip_obj):
 @contextmanager
 def _guarded_dns():
     """Pin the DNS resolution used for the live connection to the same public-IP-only
-    rule enforced by _validate_public_http_url. This removes the TOCTOU window a
+    rule enforced by _validate_public_http_url. This narrows the TOCTOU window a
     DNS-rebinding attack could exploit between validation and the socket actually
-    connecting, since it is the same resolution call that is filtered and reused."""
+    connecting, since it is the same resolution call that is filtered and reused. It does
+    not cover resolution done elsewhere: a configured HTTP(S) proxy resolves the target
+    itself, and a headless browser (Playwright) uses its own network stack."""
     original_getaddrinfo = socket.getaddrinfo
 
     def _filtered_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):

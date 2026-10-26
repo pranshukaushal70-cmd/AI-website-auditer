@@ -173,6 +173,7 @@ See `RUBRIC_MAPPING.md` for an auditable requirement-to-implementation-and-test 
 ## Portability & Engineering Hygiene
 
 * **Core dependencies**: All core auditing scripts rely strictly on the Python 3 standard library. Playwright is an optional rendering enhancement. Install it only when you want verified rendered-vs-raw and mobile geometry checks: `pip install playwright` followed by `python -m playwright install chromium`. The marketplace does not bundle a virtual environment or `site-packages`.
+* **Security warning for Playwright rendering (CLI)**: once Playwright is installed, the technical stage renders pages in headless Chromium **automatically**; the engagement stage renders only when asked, with `python skills/audit-orchestrator/scripts/run_audit.py <url> --render-engagement` (or `--render` when running `check_engagement.py` directly). The browser loads every script and sub-resource the audited page requests through its own network stack, **outside the SSRF protection** that guards every normal fetch, so a hostile page can make your machine send requests to private, loopback or cloud-metadata addresses. When auditing a site you do not trust, set `BRAND_AUDIT_DISABLE_RENDER=1` (rendered checks then report `unavailable`) or do not install Playwright. The web platform always disables rendering. Running audits through an HTTP(S) proxy is also unsupported (`docs/SECURITY.md`).
 * **Safety & Non-Invasiveness**: Read-only auditing. Strictly respects `robots.txt` disallow rules, enforces bounded crawl budgets, and applies generous 10-second network timeouts.
 * **Package Hygiene**: Strictly conforms to the `<50MB` package limit, with clean Unix-style forward slashes and no `__pycache__` or operating system artifacts.
 
@@ -224,7 +225,10 @@ Running `uvicorn brand_platform.main:app` directly still works, and the in-app g
 but the launcher is preferred: plain uvicorn trusts `X-Forwarded-For` from 127.0.0.1 by default.
 
 Development with hot reload: run the command above, then `cd frontend; npm run dev` and open http://localhost:5173
-(Vite proxies `/api` to port 8000).
+(Vite proxies `/api` to port 8000). The pinned Vite 5.4.11 dev server has known advisories, including an NTLM-hash
+disclosure on Windows that any website can trigger while it runs: stop it when you are not developing and do not
+browse untrusted sites while it runs (details and status in `docs/SECURITY.md`, "Dependency status"). The
+single-process mode above does not start Vite.
 
 Configuration is through environment variables (all optional): `BRAND_PLATFORM_DATA_DIR` (default `backend/var`),
 `BRAND_PLATFORM_MAX_CONCURRENT_JOBS` (2), `BRAND_PLATFORM_MAX_QUEUED_JOBS` (10), `BRAND_PLATFORM_DEFAULT_MAX_PAGES` (4),

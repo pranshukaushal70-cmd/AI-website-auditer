@@ -822,3 +822,71 @@ POST reached validation, while `127.0.0.1:5173` stayed refused.
 | Evaluation result files | all 20 byte-identical to `ef62121` |
 | `ruff check backend evaluation` | clean |
 | Frontend typecheck (temporary lint substitute: no ESLint is configured, by decision) / `vitest` / build | clean / 30 passed / exit 0 |
+
+## Session 18 — 2026-10-27 (security phase 7, step M3A: low-risk security and documentation fixes; approved)
+
+Built on `b75101e` (M2; CI run `40378708123` passed all four jobs). Follows the M3 review (findings B1–B8 and A1).
+No audit semantics, redirect rule, SSRF check, request policy, proxy behaviour, package version, evaluation dataset
+or result file changed.
+
+### Changes
+- **B1 — Swagger UI removed.** `/api/docs` served FastAPI's Swagger UI, which loads `swagger-ui-dist@5` (a floating
+  version, no integrity check) from cdn.jsdelivr.net onto the API's own origin, and `main.py` exempted that path from
+  the CSP. A tampered script would have had same-origin access to every API route. `docs_url=None` now (the path
+  returns 404) and the exemption is deleted, so no path is exempt from the CSP any more. Responses that pass through
+  the application's middleware carry it; unhandled-error 500s and errors uvicorn sends itself do not (see the
+  pre-commit corrections below). `/api/openapi.json` is unchanged.
+- **B2 — CLI rendering warning** (`README.md`, `docs/SECURITY.md`, `skills/audit-orchestrator/SKILL.md`). With
+  Playwright installed, the technical stage renders **automatically** in CLI runs, and Chromium's network stack is
+  outside `_validate_public_http_url` and `_guarded_dns()`. The orchestrator skill said rendering happened only "when
+  explicitly enabled", which was inaccurate for the technical stage. The platform is unaffected (rendering disabled).
+- **B3 — proxy behaviour documented**, not changed: through a proxy, `_guarded_dns()` filters the proxy's address
+  (a private proxy makes every fetch fail; a public one resolves the target outside the filter). Unsupported.
+- **B4–B6 and A1 — dependency status** section in `docs/SECURITY.md`, with applicability per advisory. A1 (Vite 5.4.11
+  dev server: NTLM-hash disclosure via `/__open-in-editor` on Windows, CORS `*`, `fs.deny` bypasses) is documented with
+  a workaround only; the Vite configuration is unchanged, by decision.
+- **B7 — wording.** `_guarded_dns()` docstring in the three engine scripts: "removes" the rebinding window became
+  "narrows", plus the proxy and browser caveat (docstring only; the parsed code with docstrings blanked is identical to
+  `b75101e` for all three files). `PROJECT_AUDIT.md` no longer says "reverse-proxy only"; the roadmap no longer says CI
+  never ran and no longer plans VM/container deployment notes while the platform is local-only.
+- **B8 — the engine's missing port allow-list** documented (CLI only; the platform enforces ports).
+
+### Tests
+`backend/tests/test_exposure.py` (16 new cases; one existing assertion moved from `/api/docs` to
+`/api/openapi.json`): the Swagger UI is not served at `/api/docs`, `/api/docs/` or `/api/docs/oauth2-redirect`, with
+or without a built UI (no fallback to `index.html`, no `swagger` or `cdn.jsdelivr.net` text); the schema is still served
+with every route; the tested application responses carry the full CSP and the other security headers (the docs 404,
+the schema, API responses, unknown routes, UI pages and assets), and so do guard rejections of `/api/docs`. These
+tests do not cover unhandled-error 500s or uvicorn's own errors, which lack the headers. Against the previous
+`main.py`, 4 of these fail (the docs page was served and both it and its rejections lacked the CSP).
+Real launcher on 127.0.0.1:8765: `/api/docs` and `/api/docs/oauth2-redirect` 404 with the full CSP; `/api/openapi.json`
+200 (OpenAPI 3.1.0, 11 paths); no Swagger or jsdelivr text.
+
+### Verification
+| Check | Result |
+|---|---|
+| Backend `pytest` (full), two runs | 312 passed, 1 skipped (the Windows file-symlink case) |
+| Engine `test_all_rubric_cases` / `test_round3_polish` / `test_engine_fixes` | 48 / 20 / 103 passed |
+| `tests/repro_d15_redirect_chain.py`; `verify_marketplace.py` | exit 0; exit 0 |
+| `evaluation/test_evaluation.py`; `run_evaluation.py --check` | 10 passed; reproducible (default, `PYTHONHASHSEED` 0 and 42; micro F1 0.92) |
+| Evaluation result files | all 20 SHA-256-identical to `b75101e` |
+| `ruff check backend evaluation` | clean |
+| Frontend typecheck (temporary lint substitute) / `vitest` / build | clean / 30 passed / exit 0 |
+
+### Pre-commit review corrections (documentation only)
+The M3A pre-commit review found three inaccuracies in the documentation and one new limitation. No code, dependency,
+security behaviour, evaluation logic or result file changed.
+- **Starlette `Range` cost (B4) corrected.** The earlier "about 1.6 s at the 16 KiB header limit" came from an
+  in-process measurement and an assumed limit. On the real launcher (uvicorn 0.32.1, h11 0.16) the largest accepted
+  header is about 63 KiB (64 KiB gets 400). Client-measured times were 3.3 s (2,000 ranges), 4.6 s (3,000), 7.1 s (4,000)
+  and 9.1 s (5,000 ranges, 56.8 KB header). `/api/health` answered in 0.25 s during the 5,000-range request (worker
+  thread, server not stalled). Severity unchanged: low, local programs only.
+- **New limitation: unhandled-error 500s lack the security headers and the `X-Request-ID` header** (verified in-process
+  with a temporary failing route that was not added to the repository). Starlette's outermost error handler builds
+  them outside the middleware that adds the headers; the generic `internal_error` body is still returned, but its
+  `request_id` field is the placeholder `"-"` (as is the `request_id` in the matching error log line), so it cannot be
+  used to correlate the response with server logs. uvicorn's own errors (400 for a malformed request line or a 64 KiB
+  header) also lack them (verified on the launcher). `docs/SECURITY.md` and `docs/API_REFERENCE.md` no longer say
+  that every response carries these headers; the gap is listed under "Known gaps" for a later code change.
+- **README:** engagement rendering is requested with `run_audit.py --render-engagement` (or `--render` on
+  `check_engagement.py`), not "`--render`" alone.

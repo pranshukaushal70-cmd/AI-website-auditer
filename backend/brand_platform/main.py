@@ -129,8 +129,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.retention.stop()
         app.state.jobs.shutdown()
 
+    # No interactive docs page (security phase 7, M3A): FastAPI's Swagger UI loads an unpinned script from a CDN with
+    # no integrity check, on this origin and outside the CSP. The schema stays available at /api/openapi.json.
     app = FastAPI(title="Brand AI-Readiness Intelligence Platform API", version=__version__, lifespan=lifespan,
-                  docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
+                  docs_url=None, openapi_url="/api/openapi.json", redoc_url=None)
     app.state.settings = settings
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "POST"],
                        allow_headers=["Content-Type", "X-Request-ID"], expose_headers=["X-Request-ID", "Content-Disposition"])
@@ -153,8 +155,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Host (e.g. "[::1") raised before ExposureGuard could reject it.
         path = request.scope.get("path", "")
         for k, v in SECURITY_HEADERS.items():
-            if k == "Content-Security-Policy" and path == "/api/docs":
-                continue  # Swagger UI loads its assets from a CDN with inline bootstrap code.
             response.headers.setdefault(k, v)
         if path.startswith("/api/"):
             log.info("request", extra={"method": request.method, "path": path, "status_code": response.status_code,

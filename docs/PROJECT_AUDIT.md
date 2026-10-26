@@ -108,7 +108,7 @@ but unchanged. D11 was fixed in security phase 3 (2026-10-25), in all three stag
 | Labelled evaluation dataset / metrics | No (unit fixtures only) | See §8 and `docs/TESTING_AND_EVALUATION.md` |
 | Optional LLM remediation | No | No |
 | CI, lint, type checks | No | ruff and `tsc` locally; CI workflow in `.github/workflows/ci.yml` (see §8) |
-| Authentication | No | No (localhost / reverse-proxy only) |
+| Authentication | No | No. Local-only by design: loopback clients only; reverse-proxy, LAN and public deployment are unsupported (`SECURITY.md`) |
 
 ## 7. Risks
 
