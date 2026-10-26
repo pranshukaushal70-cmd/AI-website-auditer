@@ -136,7 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        allow_headers=["Content-Type", "X-Request-ID"], expose_headers=["X-Request-ID", "Content-Disposition"])
     # Added after CORS so it runs before it; request_context (below) wraps both, so rejections still
     # carry X-Request-ID and the security headers.
-    app.add_middleware(ExposureGuard, max_body_bytes=settings.max_request_bytes)
+    app.add_middleware(ExposureGuard, max_body_bytes=settings.max_request_bytes, allowed_origins=settings.cors_origins)
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):

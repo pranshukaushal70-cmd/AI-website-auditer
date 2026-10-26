@@ -113,10 +113,34 @@ with `X-Request-ID` and the security headers.
 |---|---|
 | Client address and listening interface must both be loopback (`127.0.0.0/8`, `::1`, IPv4-mapped loopback). A server started with `--host 0.0.0.0` still refuses LAN clients; an unknown peer is refused. | 403 `remote_client_forbidden` |
 | `Host` must be `localhost`, `127.0.0.1` or `[::1]` (any port). This defeats DNS rebinding, where a website re-points its own domain at 127.0.0.1. | 400 `invalid_host` |
-| Methods other than GET/HEAD/OPTIONS with an `Origin` that is not a loopback origin (including `null`) are refused (CSRF). | 403 `cross_origin_forbidden` |
+| Methods other than GET/HEAD/OPTIONS that carry an `Origin` are refused (CSRF) unless that origin is the server's own (scheme plus the validated `Host`, so the Vite proxy's forwarded `localhost:5173` matches) or is listed in `BRAND_PLATFORM_CORS_ORIGINS`. Before M2 any loopback origin passed, on any port. `null` and malformed origins are refused. | 403 `cross_origin_forbidden` |
+| `Sec-Fetch-Site` (Fetch Metadata, security phase 7, M2), see below: browser requests from other sites are refused, including GETs, sub-resources and preflights. | 403 `cross_site_forbidden` |
 | A request body must be `application/json`. A body with no Content-Type is a CORS "simple request" that browsers send cross-site without a preflight. Bodiless POSTs (cancel) are unaffected. | 415 `unsupported_media_type` |
 | Bodies are capped at 64 KiB, checked from `Content-Length` and by counting a streamed body (buffered up to the cap, then replayed). | 413 `payload_too_large` / 400 `invalid_content_length` |
 
+- **Cross-site request protection** (`ExposureGuard.cross_site_refusal`; security phase 7, M2, 2026-10-26). Browsers mark
+  every request with `Sec-Fetch-Site`, which page scripts cannot set:
+
+  | `Sec-Fetch-Site` | Decision |
+  |---|---|
+  | `same-origin` | Allowed: the UI, its assets and the export links, served by the API or through the Vite proxy (which forwards the browser's `Host`, `Origin` and `Sec-Fetch-*` unchanged; verified against the real proxy). A POST must also carry a trusted `Origin` (browsers always send one). |
+  | `none` (address bar, bookmark) | GET/HEAD only, to any path. A POST is refused. |
+  | `same-site` / `cross-site` | Refused, with two exceptions: (1) an `Origin` explicitly listed in `BRAND_PLATFORM_CORS_ORIGINS`; (2) a GET/HEAD top-level navigation (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`) to a UI page (not `/api`, and no `.` in the last path segment), so a link from another app can open `/audits/<id>`. API routes, exports, `/api/docs`, assets, `index.html`, images, scripts, frames, `fetch()` and preflights from other sites are refused, GET or not. |
+  | any other value (empty, a list, unknown) | Refused. |
+  | missing | Not treated as safe, and not as proof of anything. The request falls back to the rules that applied before M2: the `Origin` rule above, the JSON-only body rule and CORS. This keeps the documented `curl` contract (`docs/API_REFERENCE.md`): a client that sends neither `Origin` nor `Sec-Fetch-Site` is allowed. |
+
+  `same-site` matters because sites ignore ports: a page on `http://localhost:3000` is same-site with
+  `http://localhost:8000`. `BRAND_PLATFORM_CORS_ORIGINS` is **empty by default** since M2 (it was
+  `http://localhost:5173,http://127.0.0.1:5173`). The UI and the Vite proxy are same-origin and need no entry. A listed
+  port trusts whatever app runs on it: during M2 an unrelated project's dev server was found holding
+  `127.0.0.1:5173`, while this project's Vite took `[::1]:5173`. Set the variable only for a frontend that calls the API
+  directly from another loopback origin.
+
+  These checks are not authentication. They stop a *browser* from acting for another website. Any program running on
+  this computer can send any headers and can use the API fully; that follows from the local-only, unauthenticated
+  design. Browsers without Fetch Metadata (before about 2020, Safari before 16.4) get only the `Origin`, JSON and CORS
+  rules, so their cross-site GETs still reach the server, although the page cannot read the response.
+  Tests: `test_exposure.py` (Fetch Metadata section).
 - None of these rules has an environment-variable override. There is deliberately no "trusted proxy" or "allow remote"
   switch, because the platform has no authentication.
 - `create_app` refuses to start if `BRAND_PLATFORM_CORS_ORIGINS` contains a non-loopback origin.
@@ -140,7 +164,7 @@ with `X-Request-ID` and the security headers.
 - Headers: `Content-Security-Policy` (`default-src 'self'`, no inline script **or** style; bars are drawn as SVG so
   `unsafe-inline` is not needed), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`.
   `/api/docs` (Swagger UI) is exempt from the CSP because it loads assets from a CDN.
-- CORS allows only the configured dev origins and the methods GET and POST.
+- CORS allows only the explicitly configured loopback origins (none by default since M2) and the methods GET and POST.
 - The UI renders crawled text as text (React escaping, no `dangerouslySetInnerHTML`), and links only `http:`/`https:`
   URLs with `rel="noopener noreferrer nofollow"`.
 - SQL uses bound parameters; column names in dynamic UPDATEs come from a fixed allow-list.
@@ -193,10 +217,10 @@ with `X-Request-ID` and the security headers.
   fixed. The remaining patterns are not formally proven linear; a new pattern over page text should be checked the
   same way (`TestPageTextScansStayLinear` runs every stage on hostile pages).
 - Sitemaps hosted on another host (for example a CDN) are not fetched, by decision; see the sitemap bullet above.
-- Cross-site GET requests from other web pages still reach the local server (the guard checks `Origin` only for
-  state-changing methods). The built-UI route no longer lets them touch other hosts (phase 7, H1), but a
-  `Sec-Fetch-Site` check that refuses cross-site sub-resource requests is a possible further hardening (not
-  implemented).
+- Cross-site GET requests are refused since M2 when the browser sends `Sec-Fetch-Site` (all current browsers do).
+  From a browser that does not send it, a cross-site GET still reaches the server. Such a page cannot read the
+  response, and the built-UI route no longer touches other hosts (phase 7, H1). Cross-site links to UI pages are
+  allowed on purpose; framing is denied.
 - Link-escape tests for the built-UI route: the directory case runs everywhere (a symlink on POSIX, a junction on
   Windows, which needs no privilege). The file-symlink case may skip only on Windows accounts without the symlink
   privilege; on any other OS a failure to create the link fails the test, so a green Linux CI run means it ran.

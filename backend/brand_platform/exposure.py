@@ -9,6 +9,8 @@ server was started:
 - the Host header must name a loopback host, which defeats DNS-rebinding pages whose own domain
   has been re-pointed at 127.0.0.1;
 - requests that can change state must not come from a foreign Origin (cross-site request forgery);
+- browser requests marked cross-site or same-site by Sec-Fetch-Site are refused unless they come from an explicitly
+  configured origin or are a top-level navigation to a UI page (security phase 7, M2);
 - a request body must be ``application/json`` (a body without a Content-Type is a CORS "simple
   request" that browsers send cross-site without a preflight);
 - a request body may not exceed ``max_body_bytes``, checked from Content-Length and while reading.
@@ -69,6 +71,26 @@ def is_loopback_origin(origin: str) -> bool:
     return parts.scheme in ("http", "https") and parts.hostname in LOOPBACK_HOSTNAMES and not parts.path.strip("/")
 
 
+def origin_key(origin: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port) of a serialized origin such as 'http://localhost:5173', with the default port filled in;
+    None for 'null', a path, credentials or anything that is not an http(s) origin."""
+    parts = urllib.parse.urlsplit(origin.strip())
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.path.strip("/") or parts.query \
+            or parts.fragment or parts.username is not None or parts.password is not None:
+        return None
+    return parts.scheme, parts.hostname, port or (443 if parts.scheme == "https" else 80)
+
+
+def is_ui_page_path(path: str) -> bool:
+    """A client-side UI route such as /, /dashboard or /audits/<id>: not the API and not a file (no '.' in the last
+    segment), so a cross-site link may open it as a page but never fetch an asset, export or API response."""
+    return path.startswith("/") and not (path == "/api" or path.startswith("/api/")) and "." not in path.rsplit("/", 1)[-1]
+
+
 def _headers(scope) -> dict[str, str]:
     out: dict[str, str] = {}
     for raw_name, raw_value in scope.get("headers") or []:
@@ -77,9 +99,46 @@ def _headers(scope) -> dict[str, str]:
 
 
 class ExposureGuard:
-    def __init__(self, app, max_body_bytes: int = DEFAULT_MAX_BODY_BYTES):
+    def __init__(self, app, max_body_bytes: int = DEFAULT_MAX_BODY_BYTES, allowed_origins=()):
         self.app = app
         self.max_body_bytes = max_body_bytes
+        # Explicitly configured loopback origins (BRAND_PLATFORM_CORS_ORIGINS, empty by default).
+        self.allowed_origins = {k for k in map(origin_key, allowed_origins) if k is not None}
+
+    def cross_site_refusal(self, scope, headers: dict[str, str], method: str) -> tuple[str, str] | None:
+        """Security phase 7 (M2). Returns (code, message) to refuse the request, or None to let it through.
+
+        These checks only stop *browsers* from acting for other websites; they do not authenticate anything, and any
+        local program can send whatever headers it likes (the platform is local-only and unauthenticated by design)."""
+        origin = headers.get("origin")
+        if method not in SAFE_METHODS and origin is not None:
+            # The server's own origin comes from the Host header, already validated as loopback. Through the Vite
+            # proxy that is the dev server's origin (it forwards Host unchanged), so the proxied UI matches too.
+            key = origin_key(origin)
+            own = origin_key(f"{scope.get('scheme', 'http')}://{headers.get('host', '')}")
+            if key is None or (key != own and key not in self.allowed_origins):
+                return "cross_origin_forbidden", "Requests from other websites are not accepted."
+        site = headers.get("sec-fetch-site")
+        if site is None:
+            # No Fetch Metadata: curl, scripts and older browsers. This proves nothing about safety; the request is
+            # left to the Origin rule above, the JSON-body rule and CORS, as before M2 (the documented curl contract).
+            return None
+        site = site.strip().lower()
+        if site in ("same-origin", "none") and method not in SAFE_METHODS and origin is None:
+            return "cross_site_forbidden", "Requests from other websites are not accepted."  # browsers always send it
+        if site == "same-origin":
+            return None
+        if site == "none":  # typed into the address bar, a bookmark: reads only
+            if method in ("GET", "HEAD"):
+                return None
+        elif site in ("same-site", "cross-site"):
+            if origin is not None and origin_key(origin) in self.allowed_origins:
+                return None
+            if (method in ("GET", "HEAD") and headers.get("sec-fetch-mode", "").strip().lower() == "navigate"
+                    and headers.get("sec-fetch-dest", "").strip().lower() == "document"
+                    and is_ui_page_path(scope.get("path", ""))):
+                return None  # a link from another app to a UI page; framing is still denied by the security headers
+        return "cross_site_forbidden", "Requests from other websites are not accepted."
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -97,9 +156,9 @@ class ExposureGuard:
         if host_header_name(headers.get("host", "")) not in LOOPBACK_HOSTNAMES:
             await _reject(send, 400, "invalid_host", "The Host header must name localhost, 127.0.0.1 or [::1].")
             return
-        origin = headers.get("origin")
-        if method not in SAFE_METHODS and origin is not None and not is_loopback_origin(origin):
-            await _reject(send, 403, "cross_origin_forbidden", "Requests from other websites are not accepted.")
+        refusal = self.cross_site_refusal(scope, headers, method)
+        if refusal:
+            await _reject(send, 403, *refusal)
             return
 
         declared = headers.get("content-length")

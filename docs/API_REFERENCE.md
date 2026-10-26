@@ -3,7 +3,9 @@
 Base path `/api`. JSON in and out. Interactive OpenAPI docs: `/api/docs`; schema: `/api/openapi.json`.
 Timestamps are UTC ISO-8601 (`2026-10-23T10:25:11Z`). Every response carries `X-Request-ID`.
 The API is local-only: loopback clients and `Host: localhost | 127.0.0.1 | [::1]` only; request bodies must be
-`application/json` and at most 64 KiB; state-changing requests from a foreign `Origin` are refused (`docs/SECURITY.md`).
+`application/json` and at most 64 KiB; state-changing requests from a foreign `Origin` are refused, and so are browser
+requests that `Sec-Fetch-Site` marks as coming from another site (`docs/SECURITY.md`). Clients such as `curl` that send
+neither header are unaffected.
 
 ## Errors
 
@@ -14,7 +16,7 @@ The API is local-only: loopback clients and `Host: localhost | 127.0.0.1 | [::1]
 | HTTP | Codes |
 |---|---|
 | 400 | `invalid_host`, `invalid_content_length` |
-| 403 | `remote_client_forbidden`, `cross_origin_forbidden` |
+| 403 | `remote_client_forbidden`, `cross_origin_forbidden`, `cross_site_forbidden` |
 | 413 | `payload_too_large` (bodies over 64 KiB) |
 | 415 | `unsupported_media_type` (request bodies must be `application/json`) |
 | 404 | `audit_not_found`, `not_found` |

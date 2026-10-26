@@ -763,3 +763,62 @@ unchanged).
 | Backend `pytest` (full), two runs | 259 passed, 1 skipped (the Windows file-symlink case) |
 | `ruff check backend evaluation`; engine pyflakes counts | clean; unchanged from `738965f` |
 | Frontend typecheck / `vitest` / build | clean / 30 passed / exit 0 |
+
+## Session 17 — 2026-10-26 (security phase 7, step M2: cross-site request protection; approved)
+
+Built on `ef62121` (H2; CI run `40231560701` passed all four jobs). Only the platform backend, its tests and docs changed.
+No engine script, evaluation dataset or result, frontend source, `.env`, secret or database was changed.
+
+### Inspection findings
+- `ExposureGuard` refused a POST only when `Origin` was not loopback, so **any loopback origin on any port** could start
+  or cancel audits. `Sec-Fetch-Site` was not checked, so cross-site GETs (`<img>`, `<script>`, links) reached every
+  route (listed as an open gap since H1).
+- The frontend always calls the relative `/api`. A header-echo server behind the real Vite proxy showed that it
+  forwards the browser's `Host` (`localhost:5173`), `Origin` and `Sec-Fetch-*` unchanged, from a `127.0.0.1` peer. The
+  dev UI is therefore same-origin and does not use the CORS allowlist.
+- On this machine an unrelated project's Vite server held `127.0.0.1:5173`, which was in the default allowlist, and
+  this project's Vite took `[::1]:5173`. A listed port trusts whatever app runs on it.
+
+### Change (policy as approved)
+- `ExposureGuard.cross_site_refusal` (rules in `docs/SECURITY.md`): `same-origin` allowed; `none` for GET/HEAD only;
+  `same-site`/`cross-site` refused unless the `Origin` is explicitly configured or the request is a GET/HEAD top-level
+  navigation to a UI page; unknown values refused. A POST marked by Fetch Metadata must carry a trusted `Origin`.
+  A missing `Sec-Fetch-Site` is not treated as safe: the request falls back to the `Origin`, JSON-body and CORS rules,
+  which keeps the documented `curl` contract (neither header sent).
+- The `Origin` rule for state-changing methods is tightened from "any loopback origin" to "the server's own origin
+  (scheme plus the validated `Host`) or one listed in `BRAND_PLATFORM_CORS_ORIGINS`".
+- `BRAND_PLATFORM_CORS_ORIGINS` defaults to empty (was `http://localhost:5173,http://127.0.0.1:5173`). Explicit
+  loopback entries still work for both CORS and the guard; non-loopback entries still refuse to start.
+- New error code `403 cross_site_forbidden`, using the existing envelope (with `X-Request-ID` and security headers).
+- These checks restrict browsers only; they are not authentication. Any local program can still use the API.
+
+### Tests
+`backend/tests/test_exposure.py`, Fetch Metadata section plus two replaced `Origin` tests. They cover same-origin API
+reads, posts, cancel, export links, assets and pages; direct navigation (`none`) for reads, with POST refused;
+cross-site and same-site links to UI pages allowed; cross-site API reads refused for every request type (`fetch`,
+image, script, style, object, embed, navigation, iframe, HEAD); cross-site static assets, `index.html` and framed pages
+refused; cross-site POSTs, form posts and preflights refused; a configured origin keeping CORS and POST while other
+ports and host names are refused; Vite proxy hosts (`localhost:5173`, `[::1]:5173`, fallback `localhost:5174`); the
+`curl` contract; unknown and case-varied header values; the rejection envelope; the default allowlist; and the helper
+parsers. Against the previous guard, 27 of the section's cases fail; the compatibility cases (same-origin, Vite proxy,
+links to UI pages) pass on both.
+
+### End-to-end check (real launcher on 127.0.0.1:8000, real Vite proxy, temporary data directory)
+Through the proxy: page load, same-origin fetch, POST create (422 for a private target), cancel and the export link
+reached the API; a cross-site fetch was refused. Direct: a typed URL, a same-origin asset and a cross-site link to a UI
+page were 200. A cross-site export link, `<img>` to the API, `<script>` to an asset, and a fetch, POST or preflight from
+`127.0.0.1:5173` were 403, and `Access-Control-Allow-Origin` is no longer sent for it. A POST with
+`Sec-Fetch-Site: none` was 403. The `curl` examples from `docs/API_REFERENCE.md` behaved as before (202, 200, 404). With
+`BRAND_PLATFORM_CORS_ORIGINS=http://localhost:5173`, that origin received CORS grants for GET and the preflight and its
+POST reached validation, while `127.0.0.1:5173` stayed refused.
+
+### Verification
+| Check | Result |
+|---|---|
+| Backend `pytest` (full), two runs | 296 passed, 1 skipped (the Windows file-symlink case) |
+| Engine `test_all_rubric_cases` / `test_round3_polish` / `test_engine_fixes` | 48 / 20 / 103 passed |
+| `tests/repro_d15_redirect_chain.py`; `verify_marketplace.py` | exit 0; exit 0 |
+| `evaluation/test_evaluation.py`; `run_evaluation.py --check` | 10 passed; reproducible (default, `PYTHONHASHSEED` 0 and 42; micro F1 0.92) |
+| Evaluation result files | all 20 byte-identical to `ef62121` |
+| `ruff check backend evaluation` | clean |
+| Frontend typecheck (temporary lint substitute: no ESLint is configured, by decision) / `vitest` / build | clean / 30 passed / exit 0 |

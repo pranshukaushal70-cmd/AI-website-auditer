@@ -74,7 +74,10 @@ class Settings:
     # Skip Wikipedia/Wikidata corroboration (reported as unavailable, never as a pass). Used by tests.
     offline_corroboration: bool = field(default_factory=lambda: os.environ.get("BRAND_PLATFORM_OFFLINE_CORROBORATION") == "1")
     creation_rate_limit: int = field(default_factory=lambda: _int("BRAND_PLATFORM_CREATE_RATE_LIMIT", 12, 1, 10000))  # per client per 10 min
-    cors_origins: list[str] = field(default_factory=lambda: _list("BRAND_PLATFORM_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"))
+    # Loopback origins other than the server's own that may call the API from a browser (CORS and the cross-site
+    # guard). Empty by default (security phase 7, M2): the UI and the Vite dev proxy are same-origin and need none,
+    # and a listed port trusts whatever app happens to run on it.
+    cors_origins: list[str] = field(default_factory=lambda: _list("BRAND_PLATFORM_CORS_ORIGINS", ""))
     frontend_dist: Path = field(default_factory=lambda: Path(os.environ.get("BRAND_PLATFORM_FRONTEND_DIST", REPO_ROOT / "frontend" / "dist")))
     # Largest accepted request body (the only body is {"url", "max_pages"}). Not environment-configurable.
     max_request_bytes: int = 64 * 1024

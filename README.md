@@ -229,7 +229,8 @@ Development with hot reload: run the command above, then `cd frontend; npm run d
 Configuration is through environment variables (all optional): `BRAND_PLATFORM_DATA_DIR` (default `backend/var`),
 `BRAND_PLATFORM_MAX_CONCURRENT_JOBS` (2), `BRAND_PLATFORM_MAX_QUEUED_JOBS` (10), `BRAND_PLATFORM_DEFAULT_MAX_PAGES` (4),
 `BRAND_PLATFORM_RUNTIME_LIMIT` (240 s), `BRAND_PLATFORM_STAGE_TIMEOUT` (60 s), `BRAND_PLATFORM_ALLOWED_PORTS` (80,443),
-`BRAND_PLATFORM_CREATE_RATE_LIMIT` (12 per 10 min), `BRAND_PLATFORM_CORS_ORIGINS`,
+`BRAND_PLATFORM_CREATE_RATE_LIMIT` (12 per 10 min), `BRAND_PLATFORM_CORS_ORIGINS` (empty; only for a frontend calling
+the API directly from another loopback origin, since the Vite proxy needs none),
 `BRAND_PLATFORM_OFFLINE_CORROBORATION=1` (operator kill switch for Wikipedia/Wikidata lookups; overrides any opt-in),
 `BRAND_PLATFORM_RETENTION_DAYS` (unset = keep audits indefinitely; see below).
 
@@ -263,7 +264,8 @@ truncated. That is **not** a guarantee of forensic erasure: backups, copies of t
 exports, filesystem snapshots, SSD wear-levelling and OS caches are outside its reach (`docs/SECURITY.md`).
 
 There is **no authentication**, so the platform is **local-only by design**. It refuses non-loopback clients, Host
-headers other than `localhost`/`127.0.0.1`/`[::1]`, cross-site state-changing requests, non-JSON bodies, and bodies over
+headers other than `localhost`/`127.0.0.1`/`[::1]`, cross-site state-changing requests, browser requests from other
+sites (`Sec-Fetch-Site`; links to UI pages still open), non-JSON bodies, and bodies over
 64 KiB. `BRAND_PLATFORM_CORS_ORIGINS` may list loopback origins only. Public, LAN or reverse-proxied deployment is **not
 supported** until proper authentication and deployment security are implemented, and no setting re-enables it
 (`docs/SECURITY.md`).
